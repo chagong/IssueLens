@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '0 0 * * *'  # Runs every day at 09:00 UTC
   workflow_dispatch:
+    inputs:
+      enable_notification:
+        description: 'Enable notification'
+        type: boolean
+        required: false
+        default: true
 
 jobs:
   run-issuelens:
@@ -68,6 +74,7 @@ jobs:
 
 
       - name: Trigger Notification
+        if: ${{ github.event_name == 'schedule' || inputs.enable_notification == true }}
         uses: ./.github/actions/notification
         with:
           url: ${{ secrets.NOTIFICATION_URL }}

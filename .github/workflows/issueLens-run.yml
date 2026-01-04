@@ -2,7 +2,7 @@ name: Run IssueLens Agent
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Runs every day at 09:00 UTC
+    - cron: '0 0 * * 1-5'  # Runs every day at 09:00 UTC
   workflow_dispatch:
     inputs:
       enable_notification:

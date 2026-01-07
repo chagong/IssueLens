@@ -81,6 +81,24 @@ Identify and summarize critical issues updated today related to the given repo.
         ]
       }
     },
+    "allIssues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "title"
+        ]
+      }
+    }
     "workflowRunUrl": {
       "type": "string"
     }
@@ -109,6 +127,20 @@ Identify and summarize critical issues updated today related to the given repo.
             "title": "Add support for Java 22 preview features",
             "summary": "Request to add syntax highlighting and IntelliSense for Java 22 preview features.",
             "labels": "🟡 **Medium Priority** | 🏷️ enhancement, java-22"
+        }
+    ],
+    "allIssues": [
+        {
+            "title": "Java debugger crashes on Windows with JDK 21",
+            "url": "https://github.com/microsoft/vscode-java-pack/issues/1234"
+        },
+        {
+            "title": "Some other issue title",
+            "url": "https://github.com/microsoft/vscode-java-pack/issues/1235"
+        },
+        {
+            "title": "Add support for Java 22 preview features",
+            "url": "https://github.com/microsoft/vscode-java-pack/issues/1256"
         }
     ],
     "workflowRunUrl": "https://github.com/chagong/issuelens/actions/runs/12345/job/67890"

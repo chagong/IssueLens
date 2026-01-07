@@ -30,7 +30,7 @@ jobs:
         id: issuelens
         run: |
           # Run copilot CLI with issuelens custom agent
-          prompt="Triage issues updated since the last working day for the following repositories:
+          prompt="Triage the opening issues updated within the specified time scope (or today if not specified) for the following repositories:
           - microsoft/vscode-java-pack
           - redhat-developer/vscode-java 
           - eclipse-jdtls/eclipse.jdt.ls 

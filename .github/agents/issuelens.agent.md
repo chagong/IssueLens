@@ -86,16 +86,16 @@ Identify and summarize critical issues updated within the specified time scope (
       "items": {
         "type": "object",
         "properties": {
-          "title": {
-            "type": "string"
+          "issueNumber": {
+            "type": "integer"
           },
           "url": {
             "type": "string"
           }
         },
         "required": [
-          "url",
-          "title"
+          "issueNumber",
+          "url"
         ]
       }
     }
@@ -131,15 +131,15 @@ Identify and summarize critical issues updated within the specified time scope (
     ],
     "allIssues": [
         {
-            "title": "Java debugger crashes on Windows with JDK 21",
+            "issueNumber": 1234,
             "url": "https://github.com/microsoft/vscode-java-pack/issues/1234"
         },
         {
-            "title": "Some other issue title",
+            "issueNumber": 1235,
             "url": "https://github.com/microsoft/vscode-java-pack/issues/1235"
         },
         {
-            "title": "Add support for Java 22 preview features",
+            "issueNumber": 1256,
             "url": "https://github.com/microsoft/vscode-java-pack/issues/1256"
         }
     ],

@@ -29,8 +29,15 @@ jobs:
       - name: Run IssueLens with Copilot CLI
         id: issuelens
         run: |
+          # Calculate time scope: 72 hours if Monday, otherwise 24 hours
+          if [ "$(date -u +%u)" -eq 1 ]; then
+            since_date=$(date -u -d "72 hours ago" +'%Y-%m-%dT%H:00:00Z')
+          else
+            since_date=$(date -u -d "24 hours ago" +'%Y-%m-%dT%H:00:00Z')
+          fi
+
           # Run copilot CLI with issuelens custom agent
-          prompt="Triage issue for the following repos:
+          prompt="Triage the opening issues updated since $since_date for the following repositories:
           - microsoft/vscode-java-pack
           - redhat-developer/vscode-java 
           - eclipse-jdtls/eclipse.jdt.ls 
@@ -41,6 +48,7 @@ jobs:
           - microsoft/build-server-for-gradle
           - microsoft/vscode-java-dependency 
           - microsoft/vscode-maven
+          - microsoft/vscode-sprint-boot-dashboard
           
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Running IssueLens with prompt: $prompt"

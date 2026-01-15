@@ -1,4 +1,4 @@
-name: Run IssueLens Agent (Eclipse Copilot)
+name: Run IssueLens Agent (JetBrains Copilot)
 
 on:
   schedule:

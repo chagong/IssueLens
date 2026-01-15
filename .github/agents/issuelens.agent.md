@@ -108,11 +108,11 @@ Identify and summarize critical issues updated within the specified time scope (
 ```
 {
     "title": "Daily Issue Report for Java Tooling",
-    "timeFrame": "December 11, 2",
     "timeFrame": "December 11, 2025",
     "totalIssues": 8,
     "criticalIssues": 3,
-    "overallSummary": "Today, 8 issues were reported
+    "overallSummary": "Today, 8 issues were reported related to Java tooling. Among them, 3 were identified as critical based on user impact and severity.",
+    "criticalIssuesSummary": [
         {
             "issueNumber": 1234,
             "url": "https://github.com/microsoft/vscode-java-pack/issues/1234",

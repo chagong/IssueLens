@@ -1,0 +1,82 @@
+name: Run IssueLens Agent (Eclipse Copilot)
+
+on:
+  schedule:
+    - cron: '0 0 * * 1-5'  # Runs every day at 09:00 UTC
+  workflow_dispatch:
+    inputs:
+      enable_notification:
+        description: 'Enable notification'
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  run-issuelens-eclipse-copilot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+      
+      - name: Run IssueLens with Copilot CLI
+        id: issuelens
+        run: |
+          # Calculate time scope: 72 hours if Monday, otherwise 24 hours
+          if [ "$(date -u +%u)" -eq 1 ]; then
+            since_date=$(date -u -d "72 hours ago" +'%Y-%m-%dT%H:00:00Z')
+          else
+            since_date=$(date -u -d "24 hours ago" +'%Y-%m-%dT%H:00:00Z')
+          fi
+
+          # Run copilot CLI with issuelens custom agent
+          prompt="Triage the opening issues updated since $since_date for the following repositories:
+          - microsoft/copilot-eclipse-feedback
+          - eclipse-copilot/eclipse-copilot
+          - microsoft/GitHub-Copilot-for-Eclipse
+          - microsoft/copilot-eclipse
+          
+          Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Running IssueLens with prompt: $prompt"
+          output=$(copilot --agent=issuelens --prompt "$prompt" 2>&1 || true)
+          
+          echo "Raw output:"
+          echo "$output"
+          
+          # Extract JSON from output (looking for lines between curly braces)
+          json_output=$(echo "$output" | sed -n '/^{/,/^}/p' | jq -c '.')
+          
+          # If no JSON found with that pattern, try to extract any JSON
+          if [ -z "$json_output" ]; then
+            json_output=$(echo "$output" | grep -o '{[^}]*}' | jq -c '.' | head -1)
+          fi
+          
+          # If still no JSON, create a default payload with the raw output
+          if [ -z "$json_output" ]; then
+            json_output=$(jq -n --arg output "$output" '{"message": "IssueLens analysis complete", "output": $output}')
+          fi
+          
+          echo "Extracted JSON:"
+          echo "$json_output"
+          
+          # Save to output
+          echo "payload=$json_output" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+      - name: Trigger Notification
+        if: ${{ github.event_name == 'schedule' || inputs.enable_notification == true }}
+        uses: ./.github/actions/notification
+        with:
+          url: ${{ secrets.NOTIFICATION_URL_ECLIPSE }}
+          payload: ${{ steps.issuelens.outputs.payload }}

@@ -1,0 +1,137 @@
+{
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "$connections": {
+            "defaultValue": {},
+            "type": "Object"
+        }
+    },
+    "triggers": {
+        "When_an_HTTP_request_is_received": {
+            "type": "Request",
+            "kind": "Http",
+            "inputs": {
+                "method": "POST",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string"
+                        },
+                        "timeFrame": {
+                            "type": "string"
+                        },
+                        "totalIssues": {
+                            "type": "integer"
+                        },
+                        "criticalIssues": {
+                            "type": "integer"
+                        },
+                        "overallSummary": {
+                            "type": "string"
+                        },
+                        "criticalIssuesSummary": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "issueNumber": {
+                                        "type": "integer"
+                                    },
+                                    "url": {
+                                        "type": "string"
+                                    },
+                                    "title": {
+                                        "type": "string"
+                                    },
+                                    "summary": {
+                                        "type": "string"
+                                    },
+                                    "labels": {
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "issueNumber",
+                                    "url",
+                                    "title",
+                                    "summary",
+                                    "labels"
+                                ]
+                            }
+                        },
+                        "allIssues": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "issueNumber": {
+                                        "type": "integer"
+                                    },
+                                    "url": {
+                                        "type": "string"
+                                    },
+                                    "title": {
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "issueNumber",
+                                    "url",
+                                    "title"
+                                ]
+                            }
+                        },
+                        "workflowRunUrl": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "actions": {
+        "Select_all_issue_cards": {
+            "runAfter": {},
+            "type": "Select",
+            "inputs": {
+                "from": "@triggerBody()?['allIssues']",
+                "select": "@concat('{\n    \"type\": \"ColumnSet\",\n    \"columns\": [\n        {\n            \"type\": \"Column\",\n            \"width\": \"auto\",\n            \"items\": [\n                {\n                    \"type\": \"TextBlock\",\n                    \"text\": \"#', item()?['issueNumber'], '\",\n                    \"weight\": \"Bolder\",\n                    \"color\": \"Accent\"\n                }\n            ]\n        },\n        {\n            \"type\": \"Column\",\n            \"width\": \"stretch\",\n            \"items\": [\n                {\n                    \"type\": \"TextBlock\",\n                    \"text\": \"', replace(item()?['title'], '\"', '\\\"'), '\",\n                    \"wrap\": true,\n                    \"maxLines\": 1\n                }\n            ]\n        }\n    ],\n    \"selectAction\": {\n        \"type\": \"Action.OpenUrl\",\n        \"url\": \"', item()?['url'], '\"\n    },\n    \"separator\": true\n}')"
+            }
+        },
+        "Select_issue_cards": {
+            "runAfter": {},
+            "type": "Select",
+            "inputs": {
+                "from": "@triggerBody()?['criticalIssuesSummary']",
+                "select": "@concat('{\n    \"type\": \"ColumnSet\",\n    \"columns\": [\n        {\n            \"type\": \"Column\",\n            \"width\": \"auto\",\n            \"items\": [\n                {\n                    \"type\": \"TextBlock\",\n                    \"text\": \"#', item()?['issueNumber'], '\",\n                    \"weight\": \"Bolder\",\n                    \"color\": \"Accent\"\n                }\n            ]\n        },\n        {\n            \"type\": \"Column\",\n            \"width\": \"stretch\",\n            \"items\": [\n                {\n                    \"type\": \"TextBlock\",\n                    \"text\": \"', replace(item()?['title'], '\"', '\\\"'), '\",\n                    \"weight\": \"Bolder\",\n                    \"wrap\": true\n                },\n                {\n                    \"type\": \"TextBlock\",\n                    \"text\": \"', replace(item()?['summary'], '\"', '\\\"'), '\",\n                    \"wrap\": true,\n                    \"isSubtle\": true,\n                    \"spacing\": \"Small\"\n                },\n                {\n                    \"type\": \"TextBlock\",\n                    \"text\": \"🏷️ ', item()?['labels'], '\",\n                    \"spacing\": \"Small\",\n                    \"size\": \"Small\"\n                }\n            ]\n        }\n    ],\n    \"separator\": true,\n    \"spacing\": \"Medium\",\n    \"selectAction\": {\n        \"type\": \"Action.OpenUrl\",\n        \"url\": \"', item()?['url'], '\"\n    }\n}')"
+            }
+        },
+        "Post_card_in_a_chat_or_channel": {
+            "runAfter": {
+                "Select_all_issue_cards": [
+                    "Succeeded"
+                ],
+                "Select_issue_cards": [
+                    "Succeeded"
+                ]
+            },
+            "type": "ApiConnection",
+            "inputs": {
+                "host": {
+                    "connection": {
+                        "name": "@parameters('$connections')['teams']['connectionId']"
+                    }
+                },
+                "method": "post",
+                "body": {
+                    "recipient": "19:ed86404779574cb18cf2f2b75382c43e@thread.v2",
+                    "messageBody": "@{concat('{\n    \"type\": \"AdaptiveCard\",\n    \"$schema\": \"http://adaptivecards.io/schemas/adaptive-card.json\",\n    \"version\": \"1.4\",\n    \"body\": [\n        {\n            \"type\": \"Container\",\n            \"style\": \"emphasis\",\n            \"items\": [\n                {\n                    \"type\": \"ColumnSet\",\n                    \"columns\": [\n                        {\n                            \"type\": \"Column\",\n                            \"width\": \"stretch\",\n                            \"items\": [\n                                {\n                                    \"type\": \"TextBlock\",\n                                    \"text\": \"', triggerBody()?['title'], '\",\n                                    \"weight\": \"Bolder\",\n                                    \"size\": \"Large\"\n                                }\n                            ]\n                        },\n                        {\n                            \"type\": \"Column\",\n                            \"width\": \"auto\",\n                            \"items\": [\n                                {\n                                    \"type\": \"TextBlock\",\n                                    \"text\": \"', triggerBody()?['timeFrame'], '\",\n                                    \"horizontalAlignment\": \"Right\",\n                                    \"isSubtle\": true\n                                }\n                            ]\n                        }\n                    ]\n                }\n            ]\n        },\n        {\n            \"type\": \"TextBlock\",\n            \"text\": \"', replace(triggerBody()?['overallSummary'], '\"', '\\\"'), '\",\n            \"wrap\": true,\n            \"spacing\": \"Medium\"\n        },\n        {\n            \"type\": \"FactSet\",\n            \"facts\": [\n                {\n                    \"title\": \"Total Issues:\",\n                    \"value\": \"', string(triggerBody()?['totalIssues']), '\"\n                },\n                {\n                    \"title\": \"Critical Issues:\",\n                    \"value\": \"', string(triggerBody()?['criticalIssues']), '\"\n                }\n            ],\n            \"separator\": true\n        }', if(greater(triggerBody()?['criticalIssues'], 0), concat(',\n        {\n            \"type\": \"TextBlock\",\n            \"text\": \"Critical Issue Details\",\n            \"weight\": \"Bolder\",\n            \"size\": \"Medium\",\n            \"separator\": true\n        },\n        {\n            \"type\": \"Container\",\n            \"items\": [', join(body('Select_issue_cards'), ','), ']\n        }'), ''), if(greater(triggerBody()?['totalIssues'], 0), concat(',\n        {\n            \"type\": \"TextBlock\",\n            \"text\": \"All Issues\",\n            \"weight\": \"Bolder\",\n            \"size\": \"Medium\",\n            \"separator\": true\n        },\n        {\n            \"type\": \"Container\",\n            \"items\": [', join(body('Select_all_issue_cards'), ','), ']\n        }'), ''), '\n    ],\n    \"actions\": [\n        {\n            \"type\": \"Action.OpenUrl\",\n            \"title\": \"View Workflow Run\",\n            \"url\": \"', triggerBody()?['workflowRunUrl'], '\"\n        }\n    ]\n}')}"
+                },
+                "path": "/v1.0/teams/conversation/adaptivecard/poster/Flow bot/location/@{encodeURIComponent('Group chat')}"
+            }
+        }
+    },
+    "outputs": {}
+}

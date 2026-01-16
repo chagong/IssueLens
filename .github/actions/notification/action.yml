@@ -15,8 +15,9 @@ runs:
   steps:
     - name: Prepare payload
       shell: bash
+      env:
+        PAYLOAD: ${{ inputs.payload }}
       run: |
-        PAYLOAD='${{ inputs.payload }}'
         echo "$PAYLOAD" > payload.json
         echo "Payload prepared:"
         cat payload.json

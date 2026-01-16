@@ -90,11 +90,15 @@ Identify and summarize critical issues updated within the specified time scope (
           },
           "url": {
             "type": "string"
+          },
+          "title": {
+            "type": "string"
           }
         },
         "required": [
           "issueNumber",
-          "url"
+          "url",
+          "title"
         ]
       }
     }
@@ -131,15 +135,18 @@ Identify and summarize critical issues updated within the specified time scope (
     "allIssues": [
         {
             "issueNumber": 1234,
-            "url": "https://github.com/microsoft/vscode-java-pack/issues/1234"
+            "url": "https://github.com/microsoft/vscode-java-pack/issues/1234",
+            "title": "Java debugger crashes on Windows with JDK 21"
         },
         {
             "issueNumber": 1235,
-            "url": "https://github.com/microsoft/vscode-java-pack/issues/1235"
+            "url": "https://github.com/microsoft/vscode-java-pack/issues/1235",
+            "title": "Variable view empty in debugger"
         },
         {
             "issueNumber": 1256,
-            "url": "https://github.com/microsoft/vscode-java-pack/issues/1256"
+            "url": "https://github.com/microsoft/vscode-java-pack/issues/1256",
+            "title": "Add support for Java 22 preview features"
         }
     ],
     "workflowRunUrl": "https://github.com/chagong/issuelens/actions/runs/12345/job/67890"

@@ -23,3 +23,6 @@ venv/
 
 # Logs
 *.log
+
+.env
+tools/workflow-runs.json

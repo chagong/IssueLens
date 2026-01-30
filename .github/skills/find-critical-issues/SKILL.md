@@ -1,5 +1,5 @@
 ---
-name: issue-lens
+name: find-critical-issues
 description: Triage GitHub issues and identify critical ones for repositories. Use when (1) analyzing issues for a time period, (2) identifying hot/blocking/regression issues, (3) generating daily/weekly issue reports, (4) filtering issues by severity criteria. Triggers on requests like "triage issues", "find critical issues", "daily issue report", "what issues need attention".
 ---
 

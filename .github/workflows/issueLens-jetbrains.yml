@@ -12,7 +12,7 @@ on:
         default: true
 
 jobs:
-  run-issuelens-eclipse-copilot:
+  run-issuelens-jetbrains-copilot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

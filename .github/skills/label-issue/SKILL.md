@@ -35,42 +35,18 @@ Fetch `.github/label-instructions.md` from the target repository using GitHub MC
 
 For template format, see [references/label_instructions_template.md](references/label_instructions_template.md).
 
-If `.github/label-instructions.md` is not found, check these fallback locations:
-1. `docs/label-instructions.md`
-2. `LABELING.md` (root)
-
-If no labeling instructions exist, use these defaults:
-- `bug`: Issues describing something broken or not working
-- `feature-request`: Requests for new functionality
-- `question`: Questions about usage
-- `documentation`: Documentation-related issues
-- `needs-more-info`: Issues lacking sufficient details
+If `.github/label-instructions.md` is not found:
+1. Fetch the list of labels defined in the target repository using `github/list_labels`
+2. Create a brief summary of available labels based on their names and descriptions
+3. Use the summary to determine which labels best match the issue content
 
 ## Issue Analysis
 
-### Type Detection
+Analyze issue content to determine appropriate labels by:
 
-Analyze issue content to determine type:
-
-| Indicators | Label |
-|------------|-------|
-| "not working", "broken", "error", "crash", "fails" | bug |
-| "feature request", "please add", "would be nice to have" | feature |
-| "how do I", "is it possible", "question about" | question |
-| "documentation", "docs", "readme", "typo in" | documentation |
-
-### Priority Assessment
-
-Assess priority based on:
-
-- **Critical**: Security issues, data loss, complete feature breakage
-- **High**: Major functionality broken, affects many users
-- **Medium**: Moderate impact, has workaround
-- **Low**: Minor issues, cosmetic, nice-to-have
-
-### Area Detection
-
-Match issue content against defined area keywords and file paths to identify affected components.
+1. **Type Detection**: Match issue keywords against label names/descriptions
+2. **Priority Assessment**: Identify severity indicators in the issue
+3. **Area Detection**: Match issue content against area-specific labels
 
 ## Applying Labels
 

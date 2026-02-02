@@ -3,7 +3,6 @@ name: IssueLens
 description: An agent responsible for triaging GitHub issues for any repository.
 # version: 2025-12-01a
 tools: ['github/list_issues', 'github/issue_read', 'read']
-target: github-copilot
 ---
 
 # Triage Agent

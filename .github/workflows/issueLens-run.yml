@@ -52,7 +52,7 @@ jobs:
           
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Running IssueLens with prompt: $prompt"
-          output=$(copilot --agent=IssueLens --prompt "$prompt" 2>&1 || true)
+          output=$(copilot --agent=issuelens --prompt "$prompt" 2>&1 || true)
           
           echo "Raw output:"
           echo "$output"

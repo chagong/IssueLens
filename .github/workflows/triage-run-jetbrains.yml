@@ -43,7 +43,7 @@ jobs:
           
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Triage with prompt: $prompt"
-          output=$(copilot --allow-all --enable-all-github-mcp-tools --prompt "$prompt" 2>&1 || true)
+          output=$(copilot --allow-all --enable-all-github-mcp-tools --no-custom-instructions --no-ask-user --prompt "$prompt" 2>&1 || true)
           
           echo "Raw output:"
           echo "$output"

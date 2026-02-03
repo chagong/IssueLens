@@ -43,7 +43,7 @@ jobs:
           
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Triage with prompt: $prompt"
-          output=$(copilot --allow-all --prompt "$prompt" 2>&1 || true)
+          output=$(copilot --allow-all --enable-all-github-mcp-tools --prompt "$prompt" 2>&1 || true)
           
           echo "Raw output:"
           echo "$output"
@@ -54,8 +54,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IDS: ${{ env.IDS }}
-          REPORT_RECIPIENTS: ${{ env.REPORT_RECIPIENTS }}
+          IDS: ${{ vars.IDS }}
+          REPORT_RECIPIENTS: ${{ vars.REPORT_RECIPIENTS }}
           MAILING_URL: ${{ secrets.MAILING_URL }}
           PERSONAL_NOTIFICATION_URL: ${{ secrets.PERSONAL_NOTIFICATION_URL }}
 

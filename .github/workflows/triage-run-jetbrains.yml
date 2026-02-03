@@ -1,0 +1,67 @@
+name: Triage Issues For JetBrains Copilot
+
+on:
+  schedule:
+    - cron: '0 1 * * 1-5'  # Runs every weekday at 09:00 Shanghai Time (UTC+8)
+  workflow_dispatch:
+
+jobs:
+  triage-jetbrains-copilot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+      
+      - name: Triage with Copilot CLI
+        id: triage
+        run: |
+          # Calculate time scope: 72 hours if Monday, otherwise 24 hours
+          if [ "$(date -u +%u)" -eq 1 ]; then
+            since_date=$(date -u -d "72 hours ago" +'%Y-%m-%dT%H:00:00Z')
+          else
+            since_date=$(date -u -d "24 hours ago" +'%Y-%m-%dT%H:00:00Z')
+          fi
+
+          # Run copilot CLI to triage issues
+          prompt="Triage the opening issues that opened since $since_date for the following repositories:
+          - microsoft/copilot-intellij-feedback
+
+          # Instructions:
+          - Use `label-issuue` skill to label issues.
+          - Use `check-sla` skill to check SLA compliance.
+          - Use `send-personal-notification` skill to notify issue assignees with the SLA violation issues. Get the assignees email addresses from `IDS` environment variable. Group the issues by assignees and notify them one by one. If an issue has multiple assignees, notify all of them.
+            - If the assignee email is not found, skip the notification for that assignee.
+          - Use `send-email` to send a summary email of the triage operation to email addresses in `REPORT_RECIPIENTS` environment variable.
+          
+          Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Triage with prompt: $prompt"
+          output=$(copilot --allow-all --prompt "$prompt" 2>&1 || true)
+          
+          echo "Raw output:"
+          echo "$output"
+          
+          # Save output to file for artifact
+          echo "$output" > triage-output.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IDS: ${{ env.IDS }}
+          REPORT_RECIPIENTS: ${{ env.JETBRAINS_REPORT_RECIPIENTS }}
+          MAILING_URL: ${{ secrets.MAILING_URL }}
+          PERSONAL_NOTIFICATION_URL: ${{ secrets.PERSONAL_NOTIFICATION_URL }}
+
+      - name: Upload triage output
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-output
+          path: triage-output.txt
+          retention-days: 30

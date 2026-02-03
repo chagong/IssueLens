@@ -35,11 +35,11 @@ jobs:
           - microsoft/copilot-intellij-feedback
 
           Instructions:
-          - Use `label-issuue` skill to label issues.
-          - Use `check-sla` skill to check SLA compliance.
-          - Use `send-personal-notification` skill to notify issue assignees with the SLA violation issues. Get the assignees email addresses from `IDS` environment variable. Group the issues by assignees and notify them one by one. If an issue has multiple assignees, notify all of them.
+          - Use 'label-issue' skill to label issues.
+          - Use 'check-sla' skill to check SLA compliance.
+          - Use 'send-personal-notification' skill to notify issue assignees with the SLA violation issues. Get the assignees email addresses from 'IDS' environment variable. Group the issues by assignees and notify them one by one. If an issue has multiple assignees, notify all of them.
             - If the assignee email is not found, skip the notification for that assignee.
-          - Use `send-email` to send a summary email of the triage operation to email addresses in `REPORT_RECIPIENTS` environment variable.
+          - Use 'send-email' to send a summary email of the triage operation to email addresses in 'REPORT_RECIPIENTS' environment variable.
           
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Triage with prompt: $prompt"

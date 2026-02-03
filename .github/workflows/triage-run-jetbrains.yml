@@ -20,6 +20,11 @@ jobs:
       - name: Install GitHub Copilot CLI
         run: npm install -g @github/copilot
       
+      - name: Mask sensitive variables
+        run: |
+          echo "::add-mask::${{ vars.IDS }}"
+          echo "::add-mask::${{ vars.REPORT_RECIPIENTS }}"
+      
       - name: Triage with Copilot CLI
         id: triage
         run: |
@@ -31,15 +36,22 @@ jobs:
           fi
 
           # Run copilot CLI to triage issues
-          prompt="Triage the opening issues that opened since $since_date for the following repositories:
+          prompt="Triage open issues that were opened since $since_date for the following repositories:
           - microsoft/copilot-intellij-feedback
 
-          Instructions:
-          - Use 'label-issue' skill to label issues.
-          - Use 'check-sla' skill to check SLA compliance.
-          - Use 'send-personal-notification' skill to notify issue assignees with the SLA violation issues. Get the assignees email addresses from 'IDS' environment variable. Group the issues by assignees and notify them one by one. If an issue has multiple assignees, notify all of them.
-            - If the assignee email is not found, skip the notification for that assignee.
-          - Use 'send-email' to send a summary email of the triage operation to email addresses in 'REPORT_RECIPIENTS' environment variable.
+          ## Instructions
+          1. Label issues using the 'label-issue' skill.
+          2. Check SLA compliance using the 'check-sla' skill.
+          3. Send personal notifications to assignees for SLA violations using the 'send-personal-notification' skill.
+             - Retrieve assignee email addresses from the 'IDS' environment variable.
+             - Group issues by assignee and send one notification per assignee.
+             - If an issue has multiple assignees, notify each of them.
+             - Skip notification if the assignee's email is not found.
+          4. Send a summary email of the triage operation using the 'send-email' skill.
+             - Send to email addresses specified in the 'REPORT_RECIPIENTS' environment variable.
+
+          ## Notes
+          - Use 'gh' CLI if you encounter issues with MCP tools.
           
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Triage with prompt: $prompt"

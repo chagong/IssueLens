@@ -55,7 +55,7 @@ jobs:
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IDS: ${{ env.IDS }}
-          REPORT_RECIPIENTS: ${{ env.JETBRAINS_REPORT_RECIPIENTS }}
+          REPORT_RECIPIENTS: ${{ env.REPORT_RECIPIENTS }}
           MAILING_URL: ${{ secrets.MAILING_URL }}
           PERSONAL_NOTIFICATION_URL: ${{ secrets.PERSONAL_NOTIFICATION_URL }}
 

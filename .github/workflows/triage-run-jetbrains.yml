@@ -51,9 +51,9 @@ jobs:
           # Save output to file for artifact
           echo "$output" > triage-output.txt
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT }}
           IDS: ${{ vars.IDS }}
           REPORT_RECIPIENTS: ${{ vars.REPORT_RECIPIENTS }}
           MAILING_URL: ${{ secrets.MAILING_URL }}

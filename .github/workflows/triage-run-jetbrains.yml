@@ -34,7 +34,7 @@ jobs:
           prompt="Triage the opening issues that opened since $since_date for the following repositories:
           - microsoft/copilot-intellij-feedback
 
-          # Instructions:
+          Instructions:
           - Use `label-issuue` skill to label issues.
           - Use `check-sla` skill to check SLA compliance.
           - Use `send-personal-notification` skill to notify issue assignees with the SLA violation issues. Get the assignees email addresses from `IDS` environment variable. Group the issues by assignees and notify them one by one. If an issue has multiple assignees, notify all of them.

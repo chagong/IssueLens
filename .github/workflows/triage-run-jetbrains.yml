@@ -28,8 +28,17 @@ jobs:
       
       - name: Mask sensitive variables
         run: |
-          echo "::add-mask::${{ vars.IDS }}"
-          echo "::add-mask::${{ vars.REPORT_RECIPIENTS }}"
+          # Mask each email address from IDS JSON
+          echo '${{ vars.IDS }}' | grep -oE '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' | while read email; do
+            echo "::add-mask::$email"
+          done
+          # Mask each email in REPORT_RECIPIENTS (comma or newline separated)
+          echo '${{ vars.REPORT_RECIPIENTS }}' | tr ',' '\n' | while read email; do
+            email=$(echo "$email" | xargs)  # trim whitespace
+            if [ -n "$email" ]; then
+              echo "::add-mask::$email"
+            fi
+          done
       
       - name: Triage with Copilot CLI
         id: triage

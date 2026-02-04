@@ -4,6 +4,12 @@ on:
   #schedule:
   #  - cron: '0 1 * * 1-5'  # Runs every weekday at 09:00 Shanghai Time (UTC+8)
   workflow_dispatch:
+    inputs:
+      user_query:
+        description: 'Custom user query (leave empty for default triage query)'
+        type: string
+        required: false
+        default: ''
 
 jobs:
   triage-jetbrains-copilot:
@@ -35,10 +41,21 @@ jobs:
             since_date=$(date -u -d "24 hours ago" +'%Y-%m-%dT%H:00:00Z')
           fi
 
-          # Run copilot CLI to triage issues
-          prompt="Triage open issues that were opened since $since_date for the following repositories:
-          - microsoft/copilot-intellij-feedback
+          # Define default user query
+          default_query="Triage open issues that were opened since $since_date"
+          
+          # Use custom query if provided, otherwise use default
+          if [ -n "${{ inputs.user_query }}" ]; then
+            user_query="${{ inputs.user_query }}"
+          else
+            user_query="$default_query"
+          fi
 
+          # Define target repositories
+          repos="- microsoft/copilot-intellij-feedback"
+
+          # Define instructions and notes
+          read -r -d '' instructions << 'INSTRUCTIONS' || true
           ## Instructions
           1. Label issues using the 'label-issue' skill.
           2. Check SLA compliance using the 'check-sla' skill.
@@ -52,8 +69,21 @@ jobs:
 
           ## Notes
           - Use 'gh' CLI if you encounter issues with MCP tools.
-          
-          Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          INSTRUCTIONS
+
+          # Define workflow URL
+          workflow_url="Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Compose the full prompt
+          prompt="$user_query
+
+          ## Target Repositories
+          $repos
+
+          $instructions
+
+          $workflow_url"
+
           echo "Triage with prompt: $prompt"
           output=$(copilot --allow-all --enable-all-github-mcp-tools --no-custom-instructions --no-ask-user --prompt "$prompt" 2>&1 || true)
           

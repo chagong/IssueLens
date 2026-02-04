@@ -28,16 +28,14 @@ jobs:
       
       - name: Mask sensitive variables
         run: |
-          # Mask each email address from IDS JSON
-          echo '${{ vars.IDS }}' | grep -oE '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' | while read email; do
-            echo "::add-mask::$email"
+          # Extract and mask sensitive values from IDS JSON (emails and github-ids)
+          echo '${{ vars.IDS }}' | jq -r '.[] | .email, ."github-id"' 2>/dev/null | while IFS= read -r value; do
+            [ -n "$value" ] && echo "::add-mask::$value"
           done
-          # Mask each email in REPORT_RECIPIENTS (comma or newline separated)
-          echo '${{ vars.REPORT_RECIPIENTS }}' | tr ',' '\n' | while read email; do
-            email=$(echo "$email" | xargs)  # trim whitespace
-            if [ -n "$email" ]; then
-              echo "::add-mask::$email"
-            fi
+          # Mask each recipient email
+          echo '${{ vars.REPORT_RECIPIENTS }}' | tr ',' '\n' | while IFS= read -r email; do
+            email=$(echo "$email" | xargs)
+            [ -n "$email" ] && echo "::add-mask::$email"
           done
       
       - name: Triage with Copilot CLI

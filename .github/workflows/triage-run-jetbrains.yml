@@ -26,21 +26,6 @@ jobs:
       - name: Install GitHub Copilot CLI
         run: npm install -g @github/copilot
       
-      - name: Mask sensitive variables
-        env:
-          IDS: ${{ vars.IDS }}
-          REPORT_RECIPIENTS: ${{ vars.REPORT_RECIPIENTS }}
-        run: |
-          # Extract and mask sensitive values from IDS JSON (emails and github-ids)
-          echo "$IDS" | jq -r '.[] | .email, ."github-id"' 2>/dev/null | while IFS= read -r value; do
-            [ -n "$value" ] && echo "::add-mask::$value"
-          done
-          # Mask each recipient email
-          echo "$REPORT_RECIPIENTS" | tr ',' '\n' | while IFS= read -r email; do
-            email=$(echo "$email" | xargs)
-            [ -n "$email" ] && echo "::add-mask::$email"
-          done
-      
       - name: Triage with Copilot CLI
         id: triage
         run: |
@@ -106,8 +91,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
-          IDS: ${{ vars.IDS }}
-          REPORT_RECIPIENTS: ${{ vars.REPORT_RECIPIENTS }}
+          IDS: ${{ secrets.IDS }}
+          REPORT_RECIPIENTS: ${{ secrets.REPORT_RECIPIENTS }}
           MAILING_URL: ${{ secrets.MAILING_URL }}
           PERSONAL_NOTIFICATION_URL: ${{ secrets.PERSONAL_NOTIFICATION_URL }}
 

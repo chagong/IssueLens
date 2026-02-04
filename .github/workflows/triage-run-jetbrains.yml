@@ -27,13 +27,16 @@ jobs:
         run: npm install -g @github/copilot
       
       - name: Mask sensitive variables
+        env:
+          IDS: ${{ vars.IDS }}
+          REPORT_RECIPIENTS: ${{ vars.REPORT_RECIPIENTS }}
         run: |
           # Extract and mask sensitive values from IDS JSON (emails and github-ids)
-          echo '${{ vars.IDS }}' | jq -r '.[] | .email, ."github-id"' 2>/dev/null | while IFS= read -r value; do
+          echo "$IDS" | jq -r '.[] | .email, ."github-id"' 2>/dev/null | while IFS= read -r value; do
             [ -n "$value" ] && echo "::add-mask::$value"
           done
           # Mask each recipient email
-          echo '${{ vars.REPORT_RECIPIENTS }}' | tr ',' '\n' | while IFS= read -r email; do
+          echo "$REPORT_RECIPIENTS" | tr ',' '\n' | while IFS= read -r email; do
             email=$(echo "$email" | xargs)
             [ -n "$email" ] && echo "::add-mask::$email"
           done

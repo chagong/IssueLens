@@ -160,3 +160,4 @@ Identify and summarize critical issues updated within the specified time scope (
 ## Notes
 - Always use available tools to complete the task.
 - Output the JSON summary at the very end of your response.
+- Do not create pull requests automatically.

@@ -65,9 +65,12 @@ Labels should be matched case-insensitively. Common variations to check:
 
 Check for parent links using:
 
-1. GitHub sub-issues API (if available)
-2. Issue body for "tracked by" or "parent" references
-3. Linked issues with tracking relationship
+1. **GitHub sub-issues API** (preferred): `GET /repos/{owner}/{repo}/issues/{issue_number}/parent`
+   - Returns the parent issue if one exists, or 404 if none
+   - Requires `GITHUB_TOKEN` or `GH_TOKEN` with `X-GitHub-Api-Version: 2022-11-28`
+   - Reference script: [`scripts/get_parent_issue.py`](../scripts/get_parent_issue.py)
+2. **Issue body fallback**: Check if the issue body contains a link to the parent repository (e.g., `https://github.com/{owner}/{parent-repo}/issues/{number}`)
+3. **Linked issues**: Check for tracking relationships
 
 ## Notification Requirements
 

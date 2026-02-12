@@ -44,11 +44,40 @@ When no repository-specific SLA is defined, apply these criteria:
 1. **Parent link exists**: Issue must have a parent issue linked (tracked-by or sub-issue relationship)
 2. **No "need attention" label**: Issue must NOT have the "need attention" label
 
+**Tolerance Period:**
+- Issues have a **7-day grace period** from creation date before SLA violations are reported
+- Issues open for ≤ 7 days that don't meet criteria are marked as **Warning** (not yet a violation)
+- Issues open for > 7 days that don't meet criteria are marked as **Violation**
+
 **SLA Status:**
 - ✅ **Good**: Issue meets SLA criteria
-- ❌ **Violation**: Issue does NOT meet SLA criteria → Notify assignees
+- ⚠️ **Warning**: Issue does not meet SLA criteria but is within the 7-day tolerance period
+- ❌ **Violation**: Issue does NOT meet SLA criteria and has exceeded the 7-day tolerance → Notify assignees
 
 For detailed criteria documentation, see [references/default-sla.md](references/default-sla.md).
+
+## Parent Link Detection
+
+To check if an issue has a parent, use the GitHub sub-issues API or the reference script:
+
+**API Endpoint:**
+```
+GET /repos/{owner}/{repo}/issues/{issue_number}/parent
+```
+
+**Using the reference script:**
+```bash
+python .github/skills/check-sla/scripts/get_parent_issue.py <owner> <repo> <issue_number>
+```
+
+The script requires `GITHUB_TOKEN` or `GH_TOKEN` environment variable. Exit codes:
+- `0` — Parent found (JSON output on stdout)
+- `2` — No parent issue found
+- `1` — Error
+
+**Fallback detection:** If the API returns 404 (no parent set via sub-issues), also check the issue body for links to the parent repository (e.g., `https://github.com/{owner}/{parent-repo}/issues/{number}`). If such a link exists, consider the issue as having a parent.
+
+See [scripts/get_parent_issue.py](scripts/get_parent_issue.py) for implementation details.
 
 ## SLA Evaluation Logic
 
@@ -59,7 +88,11 @@ ELSE:
     IF parent link exists AND "need attention" label NOT present:
         SLA Status = GOOD
     ELSE:
-        SLA Status = VIOLATION
+        days_open = (today - issue.created_at).days
+        IF days_open <= tolerance_days (default 7):
+            SLA Status = WARNING (within tolerance period)
+        ELSE:
+            SLA Status = VIOLATION
 ```
 
 ## Example Commands
@@ -93,7 +126,29 @@ Generate a comprehensive SLA status summary:
 This issue meets all SLA requirements. A parent tracking issue is linked and no immediate attention is required.
 ```
 
-**If SLA is Violated:**
+**If SLA is Warning (within 7-day tolerance):**
+```
+## ⚠️ SLA Status: Warning
+
+**Issue:** #123 - [Issue Title]
+**Repository:** owner/repo
+**Assignees:** @user1, @user2
+**Status:** Warning (within 7-day tolerance)
+**Days Open:** 3 days (4 days remaining)
+
+### Evaluation Details
+| Criteria | Status |
+|----------|--------|
+| Parent Link | ❌ Missing |
+| "need attention" Label | ✅ Not present |
+| Waiting Labels | N/A |
+| Tolerance Period | ⚠️ 3 of 7 days elapsed |
+
+### Action Needed Before Deadline
+- **Missing parent link**: Link this issue to a parent tracking issue within 4 days to avoid SLA violation
+```
+
+**If SLA is Violated (past 7-day tolerance):**
 ```
 ## ❌ SLA Status: Violation
 
@@ -101,6 +156,7 @@ This issue meets all SLA requirements. A parent tracking issue is linked and no 
 **Repository:** owner/repo
 **Assignees:** @user1, @user2
 **Status:** Violation
+**Days Open:** 10 days (exceeded 7-day tolerance by 3 days)
 
 ### Evaluation Details
 | Criteria | Status |
@@ -108,6 +164,7 @@ This issue meets all SLA requirements. A parent tracking issue is linked and no 
 | Parent Link | ❌ Missing |
 | "need attention" Label | ❌ Present |
 | Waiting Labels | N/A |
+| Tolerance Period | ❌ Exceeded (10 days) |
 
 ### Failed Criteria
 - **Missing parent link**: Issue is not linked to a parent tracking issue

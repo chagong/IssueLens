@@ -10,6 +10,11 @@ on:
         type: string
         required: false
         default: ''
+      since_date:
+        description: 'Triage issues opened since this date (YYYY-MM-DD)'
+        type: string
+        required: false
+        default: '2026-01-01'
 
 jobs:
   triage-jetbrains-copilot:
@@ -29,15 +34,9 @@ jobs:
       - name: Triage with Copilot CLI
         id: triage
         run: |
-          # Calculate time scope: 72 hours if Monday, otherwise 24 hours
-          if [ "$(date -u +%u)" -eq 1 ]; then
-            since_date=$(date -u -d "72 hours ago" +'%Y-%m-%dT%H:00:00Z')
-          else
-            since_date=$(date -u -d "24 hours ago" +'%Y-%m-%dT%H:00:00Z')
-          fi
-
           # Define default user query
-          default_query="Triage open issues that were opened since $since_date"
+          since_date="${{ inputs.since_date || '2026-01-01' }}"
+          default_query="Triage open issues that were opened since ${since_date}"
           
           # Use custom query if provided, otherwise use default
           if [ -n "${{ inputs.user_query }}" ]; then
@@ -51,9 +50,37 @@ jobs:
 
           # Define instructions and notes
           read -r -d '' instructions << 'INSTRUCTIONS' || true
-          ## Instructions
-          1. Label issues using the 'label-issue' skill.
-          2. Check SLA compliance using the 'check-sla' skill.
+          ## Important: Context Management Strategy
+          There may be a large number of issues to triage. To avoid losing context:
+
+          ### Phase 1: Fetch and Triage Issues (batch processing)
+          1. Fetch all matching open issues from each target repository.
+          2. Process issues in batches (up to 30 at a time).
+          3. For each issue, perform labeling and SLA check.
+          4. After each batch, append the triage results to a local JSON file `triage-results.json` using the following schema:
+             ```json
+             [
+               {
+                 "repo": "owner/repo",
+                 "issue_number": 123,
+                 "title": "Issue title",
+                 "url": "https://github.com/owner/repo/issues/123",
+                 "assignees": ["user1", "user2"],
+                 "labels": ["bug", "area:chat"],
+                 "labels_added": ["bug"],
+                 "sla_status": "GOOD | WARNING | VIOLATION",
+                 "sla_details": "Brief reason",
+                 "days_open": 5
+               }
+             ]
+             ```
+          5. Use `cat triage-results.json` to verify saved results before moving to the next batch.
+          6. Repeat until all issues are processed.
+
+          ### Phase 2: Group and Summarize (read from file)
+          After ALL issues are processed:
+          1. Read `triage-results.json` to get the full picture.
+          2. Group SLA violations by assignee.
           3. Send personal notifications to assignees for SLA violations using the 'send-personal-notification' skill.
              - Retrieve assignee email addresses from the 'IDS' environment variable.
              - Group issues by assignee and send one notification per assignee.
@@ -61,9 +88,17 @@ jobs:
              - Skip notification if the assignee's email is not found.
           4. Send a summary email of the triage operation using the 'send-email' skill.
              - Send to email addresses specified in the 'REPORT_RECIPIENTS' environment variable.
+             - Include counts: total issues triaged, SLA good, SLA warning, SLA violation.
+
+          ### Skill Usage
+          - Label issues using the 'label-issue' skill.
+          - Check SLA compliance using the 'check-sla' skill.
 
           ## Notes
           - Use 'gh' CLI if you encounter issues with MCP tools.
+          - Always persist intermediate results to `triage-results.json` so nothing is lost between batches.
+          - Initialize `triage-results.json` with `echo '[]' > triage-results.json` before starting.
+          - Use `jq` to merge batch results: `jq -s 'add' triage-results.json batch.json > tmp.json && mv tmp.json triage-results.json`
           INSTRUCTIONS
 
           # Define workflow URL

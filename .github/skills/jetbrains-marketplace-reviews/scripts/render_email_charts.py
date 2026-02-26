@@ -251,6 +251,274 @@ def chart_rolling_avg(reviews):
     return fig_to_base64(fig)
 
 
+def chart_rolling_28day(reviews):
+    """Rolling 28-day average rating trend by calendar date."""
+    rated = [r for r in reviews if r["rating"] > 0]
+    if len(rated) < 5:
+        return None
+
+    daily = defaultdict(list)
+    for r in rated:
+        daily[r["date"]].append(r["rating"])
+    dates_sorted = sorted(daily.keys())
+    if not dates_sorted:
+        return None
+
+    from datetime import timedelta
+    date_objs = [datetime.strptime(d, "%Y-%m-%d") for d in dates_sorted]
+    start, end = date_objs[0], date_objs[-1]
+    all_dates = []
+    cur = start
+    while cur <= end:
+        all_dates.append(cur)
+        cur += timedelta(days=1)
+
+    # Build daily avg map
+    daily_avg = {}
+    for d in dates_sorted:
+        daily_avg[d] = sum(daily[d]) / len(daily[d])
+
+    # 28-day rolling average
+    rolling_dates = []
+    rolling_vals = []
+    for d in all_dates:
+        window_start = d - timedelta(days=27)
+        window_ratings = []
+        for r in rated:
+            rd = datetime.strptime(r["date"], "%Y-%m-%d")
+            if window_start <= rd <= d:
+                window_ratings.append(r["rating"])
+        if window_ratings:
+            rolling_dates.append(d)
+            rolling_vals.append(sum(window_ratings) / len(window_ratings))
+
+    if not rolling_vals:
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.fill_between(rolling_dates, rolling_vals, alpha=0.15, color="#e65100")
+    ax.plot(rolling_dates, rolling_vals, color="#e65100", linewidth=2)
+    ax.axhline(y=3.0, color="#999", linestyle="--", linewidth=1,
+               label="Neutral (3.0)")
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Avg Rating")
+    ax.set_ylim(0.5, 5.5)
+    ax.set_title("Rolling 28-Day Average Rating Trend")
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    return fig_to_base64(fig)
+
+
+# ── comment categorization ───────────────────────────────────────────────
+
+CATEGORIES = {
+    "IDE Compatibility": [
+        r"\b(intellij|webstorm|pycharm|phpstorm|rider|goland|clion|rubymine|datagrip|android.?studio)\b",
+        r"\b(ide|jetbrains)\b.{0,20}(compat|support|version|issue|problem|work)",
+        r"(not|doesn.?t|won.?t|isn.?t).{0,15}(compat|support).{0,10}(ide|version|plugin)",
+        r"\b(plugin|extension).{0,15}(compat|version|update|outdated|conflict)",
+        r"(eap|beta|canary|nightly).{0,10}(version|build|support|compat)",
+        r"(2024|2025|2026)\.\d.{0,10}(support|compat|work|issue|break)",
+    ],
+    "Bugs & Crashes": [
+        r"\b(crash|crashes|crashing|crashed)\b",
+        r"\b(error|errors|exception|exceptions)\b",
+        r"\b(bug|bugs|buggy|broken|glitch)\b",
+        r"(not|isn.?t|doesn.?t|won.?t|stopped?).{0,10}work",
+        r"\b(fail|fails|failed|failing|failure)\b",
+        r"\b(hang|hangs|hanging|hung|freeze|freezes|frozen)\b",
+        r"(null.?pointer|stack.?trace|out.?of.?memory|dead.?lock)",
+    ],
+    "Chat & Agent Features": [
+        r"\b(chat|copilot.?chat|inline.?chat|agent|agentic)\b",
+        r"\b(conversation|prompt|ask|question|answer|context)\b.{0,15}(copilot|ai|feature)",
+        r"\b(explain|refactor|generate|fix).{0,10}(code|function|method|class)\b",
+        r"\b(multi.?file|workspace|codebase).{0,10}(edit|context|aware)",
+        r"\b(slash.?command|@workspace|@terminal|/fix|/explain|/tests?)\b",
+        r"\b(edit.?mode|agent.?mode|ask.?mode)\b",
+    ],
+    "Comparison with Competitors": [
+        r"\b(cursor|tabnine|codeium|supermaven|amazon.?q|code.?whisperer|windsurf)\b",
+        r"\b(competitor|alternative|switch|switched|compared|comparison|versus|vs\.?)\b",
+        r"(better|worse|behind).{0,15}(than|compared).{0,15}(cursor|tabnine|codeium|other)",
+        r"(moved?|migrat|switch).{0,10}(to|from|back).{0,10}(cursor|tabnine|codeium|copilot)",
+    ],
+    "Praise & Positive": [
+        r"\b(great|excellent|amazing|awesome|love|fantastic|wonderful|best|perfect|superb|brilliant)\b",
+        r"\b(helpful|useful|productive|good|nice|impressive|recommend|outstanding)\b",
+        r"(save|saved|saves).{0,10}(time|hour|effort)",
+        r"(game.?changer|must.?have|life.?saver|indispensable)",
+        r"\b(thank|thanks|thx|kudos|bravo|well.?done)\b",
+        r"(10|five|5).{0,5}(out of|/).{0,5}(10|five|5|stars?)",
+    ],
+    "Code Suggestions Quality": [
+        r"\b(suggestion|suggestions|completion|completions|autocomplete|auto.?complete)\b",
+        r"(wrong|bad|incorrect|useless|irrelevant|garbage|terrible|poor).{0,15}(suggestion|completion|code|output|prediction)",
+        r"(code|suggestion|completion).{0,10}(quality|accuracy|relevance)",
+        r"\b(hallucin|phantom|ghost|nonsense|gibberish)\w*",
+        r"\b(inline).{0,10}(suggestion|completion|predict)",
+        r"(tab|accept).{0,10}(completion|suggestion)",
+        r"(context|understand).{0,10}(code|project|wrong|right|well|poor)",
+    ],
+    "Performance & Resource Usage": [
+        r"\b(slow|lag|laggy|latency|sluggish|unresponsive|delay)\b",
+        r"takes? (too )?(long|forever|ages)",
+        r"(high|excessive|heavy|huge).{0,10}(cpu|memory|ram|resource|usage|consumption)",
+        r"\b(memory.?leak|cpu.?usage|resource.?hog|battery.?drain)\b",
+        r"\b(bloat|bloated|overhead|footprint)\b",
+        r"(speed|response.?time|typing).{0,10}(slow|delay|lag)",
+        r"\b(indexing|scanning).{0,10}(slow|forever|long)\b",
+    ],
+    "Pricing & Value": [
+        r"\b(price|pricing|expensive|costly|overpriced|cheap)\b",
+        r"\b(free|paid|subscription|billing|cost|pay|money|worth|tier)\b",
+        r"not worth",
+        r"\b(pro|business|enterprise|individual).{0,10}(plan|tier|pricing|subscription)",
+        r"\b(trial|refund|cancel|renew)\b",
+    ],
+    "Authentication & Login": [
+        r"\b(login|log.in|sign.in|sign.up|auth|authenticate|authentication)\b",
+        r"\b(token|license|subscription|account)\b.{0,15}(error|fail|issue|problem|invalid|expire)",
+        r"(can.?t|cannot|couldn.?t|unable).{0,15}(login|log.in|sign|connect|auth)",
+        r"\b(sso|oauth|github.?account|two.?factor|2fa|mfa)\b",
+        r"(session|credential).{0,10}(expire|invalid|lost|refresh)",
+    ],
+    "Models Unavailable": [
+        r"model.{0,20}(not|un|isn).{0,10}(available|provided|supported|found)",
+        r"(can.?t|cannot|couldn.?t).{0,20}(access|find|use|select).{0,15}model",
+        r"(claude|gpt|gemini|copilot).{0,20}(not|un|isn).{0,10}(available|provided|found|showing|listed)",
+        r"(no|missing|lack).{0,10}(model|claude|gpt)",
+        r"model.{0,10}(missing|gone|disappeared|removed)",
+        r"(where|why).{0,15}(claude|gpt|model)",
+        r"(want|need|expect).{0,15}(claude|gpt|model).{0,10}(but|not)",
+        r"(model|llm).{0,10}(selection|choice|option|picker|dropdown).{0,10}(missing|empty|unavailable)",
+    ],
+}
+
+import re as _re
+
+
+def categorize_comments(reviews):
+    """Categorize review comments using keyword/regex matching.
+
+    Returns dict mapping category -> list of reviews, and
+    each review gets a 'categories' key added.
+    """
+    compiled = {cat: [_re.compile(p, _re.IGNORECASE) for p in patterns]
+                for cat, patterns in CATEGORIES.items()}
+
+    result = defaultdict(list)
+    uncategorized = []
+    for r in reviews:
+        comment = r.get("comment", "")
+        if not comment:
+            continue
+        matched = []
+        for cat, patterns in compiled.items():
+            if any(p.search(comment) for p in patterns):
+                matched.append(cat)
+                result[cat].append(r)
+        r["categories"] = matched
+        if not matched:
+            uncategorized.append(r)
+
+    result["General / Uncategorized"] = uncategorized
+    return result
+
+
+def chart_category_bar(cat_counts):
+    """Horizontal bar chart of comment categories."""
+    cats = sorted(cat_counts.keys(), key=lambda c: cat_counts[c])
+    vals = [cat_counts[c] for c in cats]
+
+    palette = ["#ef5350", "#ff9800", "#fdd835", "#66bb6a", "#42a5f5",
+               "#7e57c2", "#ec407a", "#26c6da", "#8d6e63", "#78909c"]
+    colors = [palette[i % len(palette)] for i in range(len(cats))]
+
+    fig, ax = plt.subplots(figsize=(8, max(3, len(cats) * 0.5)))
+    bars = ax.barh(range(len(cats)), vals, color=colors, edgecolor="white",
+                   height=0.6)
+    ax.set_yticks(range(len(cats)))
+    ax.set_yticklabels(cats, fontsize=9)
+    for bar, val in zip(bars, vals):
+        ax.text(bar.get_width() + max(vals) * 0.01,
+                bar.get_y() + bar.get_height() / 2,
+                str(val), ha="left", va="center", fontsize=9,
+                fontweight="bold")
+    ax.set_xlabel("Number of Reviews")
+    ax.set_title("Comment Categories (by Volume)")
+    ax.set_xlim(0, max(vals) * 1.15 if vals else 1)
+    fig.tight_layout()
+    return fig_to_base64(fig)
+
+
+def chart_category_avg_rating(cat_data):
+    """Horizontal bar chart of average rating per category."""
+    cat_avgs = {}
+    for cat, revs in cat_data.items():
+        rated = [r["rating"] for r in revs if r["rating"] > 0]
+        if rated:
+            cat_avgs[cat] = sum(rated) / len(rated)
+    if not cat_avgs:
+        return None
+
+    cats = sorted(cat_avgs.keys(), key=lambda c: cat_avgs[c])
+    vals = [cat_avgs[c] for c in cats]
+    colors = ["#43a047" if v >= 3.5 else "#fdd835" if v >= 2.5
+              else "#ff9800" if v >= 2 else "#ef5350" for v in vals]
+
+    fig, ax = plt.subplots(figsize=(8, max(3, len(cats) * 0.5)))
+    bars = ax.barh(range(len(cats)), vals, color=colors, edgecolor="white",
+                   height=0.6)
+    ax.set_yticks(range(len(cats)))
+    ax.set_yticklabels(cats, fontsize=9)
+    for bar, val in zip(bars, vals):
+        ax.text(bar.get_width() + 0.05, bar.get_y() + bar.get_height() / 2,
+                f"{val:.2f}", ha="left", va="center", fontsize=9,
+                fontweight="bold")
+    ax.axvline(x=3.0, color="#999", linestyle="--", linewidth=1,
+               label="Neutral (3.0)")
+    ax.set_xlabel("Average Rating")
+    ax.set_title("Average Rating by Comment Category")
+    ax.set_xlim(0, 5.5)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig_to_base64(fig)
+
+
+def chart_category_pie(cat_counts):
+    """Pie chart of comment category distribution."""
+    # Merge small categories (<2%) into "Other"
+    total = sum(cat_counts.values())
+    if total == 0:
+        return None
+    main = {k: v for k, v in cat_counts.items() if v / total >= 0.02}
+    other = total - sum(main.values())
+    if other > 0:
+        main["Other (small)"] = other
+
+    labels = list(main.keys())
+    sizes = list(main.values())
+    palette = ["#ef5350", "#ff9800", "#fdd835", "#66bb6a", "#42a5f5",
+               "#7e57c2", "#ec407a", "#26c6da", "#8d6e63", "#78909c",
+               "#aed581", "#4dd0e1"]
+    colors = [palette[i % len(palette)] for i in range(len(labels))]
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    wedges, texts, autotexts = ax.pie(
+        sizes, labels=None, colors=colors, autopct="%1.1f%%",
+        startangle=140, pctdistance=0.8,
+        textprops={"fontsize": 8, "fontweight": "bold"})
+    ax.legend(wedges, labels, loc="center left", bbox_to_anchor=(1, 0.5),
+              fontsize=8)
+    ax.set_title("Comment Category Distribution", fontsize=13,
+                 fontweight="bold")
+    fig.tight_layout()
+    return fig_to_base64(fig)
+
+
 # ── HTML builder ─────────────────────────────────────────────────────────
 
 CARD = ('background:white;border-radius:10px;padding:24px;'
@@ -306,6 +574,16 @@ def build_html(reviews, title="JetBrains Plugin"):
     b64_trend = chart_monthly_rating_trend(months, monthly)
     b64_stacked = chart_stacked_monthly(months, monthly)
     b64_rolling = chart_rolling_avg(reviews)
+    b64_28day = chart_rolling_28day(reviews)
+
+    # Comment categorization & charts
+    print("Categorizing comments...")
+    cat_data = categorize_comments(reviews)
+    cat_counts = {cat: len(revs) for cat, revs in cat_data.items()
+                  if revs}
+    b64_cat_bar = chart_category_bar(cat_counts) if cat_counts else None
+    b64_cat_avg = chart_category_avg_rating(cat_data) if cat_data else None
+    b64_cat_pie = chart_category_pie(cat_counts) if cat_counts else None
     print("Charts rendered.")
 
     # Yearly table
@@ -381,9 +659,98 @@ def build_html(reviews, title="JetBrains Plugin"):
                   if b64_year else "")
     rolling_chart = (f'<div style="{CARD}">'
                      f'<h2 style="color:#37474f;font-size:16px;'
-                     f'margin:0 0 8px 0;">📉 Rolling Average</h2>'
+                     f'margin:0 0 8px 0;">📉 Rolling Average (per-review)</h2>'
                      f'{img_tag(b64_rolling, "Rolling Average")}</div>'
                      if b64_rolling else "")
+    rolling_28day_chart = (f'<div style="{CARD_HL}">'
+                           f'<h2 style="color:#e65100;font-size:16px;'
+                           f'margin:0 0 8px 0;">📈 Rolling 28-Day Average '
+                           f'Rating Trend</h2>'
+                           f'{img_tag(b64_28day, "28-Day Rolling Avg")}</div>'
+                           if b64_28day else "")
+
+    # Category charts HTML
+    cat_bar_html = (f'<div style="{CARD}">'
+                    f'<h2 style="color:#37474f;font-size:16px;'
+                    f'margin:0 0 8px 0;">🏷️ Comment Categories (by Volume)'
+                    f'</h2>'
+                    f'{img_tag(b64_cat_bar, "Category Bar Chart")}</div>'
+                    if b64_cat_bar else "")
+    cat_avg_html = (f'<div style="{CARD}">'
+                    f'<h2 style="color:#37474f;font-size:16px;'
+                    f'margin:0 0 8px 0;">🎯 Average Rating by Category'
+                    f'</h2>'
+                    f'{img_tag(b64_cat_avg, "Category Avg Rating")}</div>'
+                    if b64_cat_avg else "")
+    cat_pie_html = (f'<div style="{CARD}">'
+                    f'<h2 style="color:#37474f;font-size:16px;'
+                    f'margin:0 0 8px 0;">🍩 Category Distribution</h2>'
+                    f'{img_tag(b64_cat_pie, "Category Pie Chart")}</div>'
+                    if b64_cat_pie else "")
+
+    # Category summary table
+    cat_table_rows = ""
+    for cat in sorted(cat_counts.keys(),
+                      key=lambda c: cat_counts[c], reverse=True):
+        cnt = cat_counts[cat]
+        rated_c = [r["rating"] for r in cat_data[cat] if r["rating"] > 0]
+        avg_c = (f"{sum(rated_c) / len(rated_c):.2f}"
+                 if rated_c else "N/A")
+        pct = f"{cnt / sum(cat_counts.values()) * 100:.1f}%"
+        cat_table_rows += (
+            f'<tr>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid '
+            f'#e8e8e8;font-weight:bold;">{html_mod.escape(cat)}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid '
+            f'#e8e8e8;text-align:center;">{cnt}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid '
+            f'#e8e8e8;text-align:center;">{pct}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid '
+            f'#e8e8e8;text-align:center;">{avg_c}</td>'
+            f'</tr>'
+        )
+
+    # Models Unavailable highlight table
+    models_reviews = cat_data.get("Models Unavailable", [])
+    models_highlight = ""
+    if models_reviews:
+        m_rows = ""
+        for r in models_reviews[:10]:
+            c = html_mod.escape(r.get("comment", ""))[:250]
+            if len(r.get("comment", "")) > 250:
+                c += "..."
+            stars = ("⭐" * r["rating"]) if r["rating"] > 0 else "—"
+            link = (f'<a href="{r["link"]}" style="color:#0366d6;">'
+                    f'View</a>' if r.get("link") else "")
+            m_rows += (
+                f'<tr>'
+                f'<td style="padding:6px 8px;border-bottom:1px solid '
+                f'#e8e8e8;white-space:nowrap;font-size:12px;">'
+                f'{r["date"]}</td>'
+                f'<td style="padding:6px 8px;border-bottom:1px solid '
+                f'#e8e8e8;">{stars}</td>'
+                f'<td style="padding:6px 8px;border-bottom:1px solid '
+                f'#e8e8e8;font-size:12px;">{c}</td>'
+                f'<td style="padding:6px 8px;border-bottom:1px solid '
+                f'#e8e8e8;">{link}</td></tr>'
+            )
+        models_highlight = (
+            f'<div style="{CARD_HL}">'
+            f'<h2 style="color:#ef5350;font-size:16px;margin:0 0 12px 0;">'
+            f'🚨 "Models Unavailable" Reviews ({len(models_reviews)} total, '
+            f'showing up to 10)</h2>'
+            f'<table style="width:100%;border-collapse:collapse;">'
+            f'<tr>'
+            f'<th style="background:#ef5350;color:white;padding:8px;'
+            f'text-align:left;font-size:12px;">Date</th>'
+            f'<th style="background:#ef5350;color:white;padding:8px;'
+            f'text-align:left;font-size:12px;">Rating</th>'
+            f'<th style="background:#ef5350;color:white;padding:8px;'
+            f'text-align:left;font-size:12px;">Comment</th>'
+            f'<th style="background:#ef5350;color:white;padding:8px;'
+            f'text-align:left;font-size:12px;">Link</th></tr>'
+            + m_rows + '</table></div>'
+        )
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
@@ -450,6 +817,8 @@ color:white;border-radius:10px;padding:14px;text-align:center;width:25%;">
 
 {rolling_chart}
 
+{rolling_28day_chart}
+
 <div style="{CARD}">
   <h2 style="color:#37474f;font-size:16px;margin:0 0 12px 0;">\
 📅 Yearly Summary</h2>
@@ -466,6 +835,40 @@ text-align:left;">Avg Rating</th></tr>
   {yearly_rows}
   </table>
 </div>
+
+<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);\
+padding:20px 24px;border-radius:12px;margin:20px 0 16px 0;">
+  <h1 style="color:#fff;margin:0;font-size:18px;">\
+🏷️ Comment Categorization Analysis</h1>
+  <p style="color:#a0aec0;margin:6px 0 0 0;font-size:12px;">
+    Reviews classified by keyword/topic matching
+  </p>
+</div>
+
+<div style="{CARD}">
+  <h2 style="color:#37474f;font-size:16px;margin:0 0 12px 0;">\
+📋 Category Summary</h2>
+  <table style="width:100%;border-collapse:collapse;">
+  <tr>\
+<th style="background:#7e57c2;color:white;padding:10px 12px;\
+text-align:left;">Category</th>\
+<th style="background:#7e57c2;color:white;padding:10px 12px;\
+text-align:center;">Count</th>\
+<th style="background:#7e57c2;color:white;padding:10px 12px;\
+text-align:center;">% of Comments</th>\
+<th style="background:#7e57c2;color:white;padding:10px 12px;\
+text-align:center;">Avg Rating</th></tr>
+  {cat_table_rows}
+  </table>
+</div>
+
+{cat_bar_html}
+
+{cat_avg_html}
+
+{cat_pie_html}
+
+{models_highlight}
 
 <div style="{CARD}">
   <h2 style="color:#ef5350;font-size:16px;margin:0 0 12px 0;">\

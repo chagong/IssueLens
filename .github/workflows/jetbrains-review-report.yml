@@ -1,0 +1,72 @@
+name: JetBrains Marketplace Review Report
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'  # Runs every Monday at 8:00 Shanghai Time (UTC+8)
+  workflow_dispatch:
+
+jobs:
+  review-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Generate and Send Review Report
+        id: report
+        run: |
+          prompt="Fetch all review data for the 'GitHub Copilot' JetBrains Marketplace plugin (ID: 17718) with full content (authors and comments). Then generate an HTML email report and send it to the recipients in the REPORT_RECIPIENTS environment variable (comma-separated list of emails).
+
+          Include these charts:
+          1. Rating Distribution
+          2. Average Rating by Year
+          3. Monthly Review Volume
+          4. Rolling 28-Day Average Rating Trend
+          5. Monthly Rating Breakdown (Stacked)
+          6. Rolling Average Rating (per-review)
+          7. Yearly Summary
+
+          Categorize all review comments into these categories using keyword/regex matching, and include category visualization charts (bar chart by volume, average rating by category, pie chart distribution) plus a summary table and a highlight table for 'Models Unavailable' showing up to 10 sample reviews:
+
+          - IDE Compatibility
+          - Bugs & Crashes
+          - Chat & Agent Features
+          - Comparison with Competitors
+          - Praise & Positive
+          - Code Suggestions Quality
+          - Performance & Resource Usage
+          - General / Uncategorized
+          - Pricing & Value
+          - Authentication & Login
+          - Models Unavailable (user reports missing/inaccessible AI models)
+
+          Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          echo "Running with prompt: $prompt"
+          output=$(copilot --allow-all --no-custom-instructions --no-ask-user --prompt "$prompt" 2>&1 || true)
+
+          echo "Raw output:"
+          echo "$output"
+
+          echo "$output" > report-output.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPORT_RECIPIENTS: ${{ secrets.REVIEW_REPORT_RECIPIENTS }}
+          MAILING_URL: ${{ secrets.MAILING_URL }}
+
+      - name: Upload report output
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-output
+          path: report-output.txt
+          retention-days: 30

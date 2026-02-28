@@ -74,7 +74,7 @@ py .github/skills/jetbrains-marketplace-reviews/scripts/fetch_reviews.py \
 | `--since YYYY-MM-DD` | Start date filter | none |
 | `--until YYYY-MM-DD` | End date filter | none |
 | `--full-content` | Include author name and comment text | off |
-| `--output PATH` | Output JSON file path | `scripts/reviews.json` |
+| `--output PATH` | Output JSON file path | `../../../output/reviews.json` |
 
 ### visualize_reviews.py
 
@@ -96,8 +96,8 @@ py .github/skills/jetbrains-marketplace-reviews/scripts/visualize_reviews.py \
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--input PATH` | Input JSON file | `scripts/reviews.json` |
-| `--output PATH` | Output PNG file | `scripts/review_analysis.png` |
+| `--input PATH` | Input JSON file | `../../../output/reviews.json` |
+| `--output PATH` | Output PNG file | `../../../output/review_analysis.png` |
 | `--title TEXT` | Plugin name shown in chart titles | `JetBrains Plugin` |
 | `--no-show` | Skip interactive display | off |
 | `--base64` | Output each chart as base64 PNG (JSON dict) instead of a single image file. For email embedding. | off |
@@ -124,8 +124,8 @@ py .github/skills/jetbrains-marketplace-reviews/scripts/render_email_charts.py \
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--input PATH` | Input JSON file | `scripts/reviews.json` |
-| `--output PATH` | Output HTML file | `scripts/email_report.html` |
+| `--input PATH` | Input JSON file | `../../../output/reviews.json` |
+| `--output PATH` | Output HTML file | `../../../output/email_report.html` |
 | `--title TEXT` | Plugin name shown in titles | `JetBrains Plugin` |
 | `--json-output PATH` | Also save chart base64 data as JSON | none |
 
@@ -139,6 +139,58 @@ py .github/skills/jetbrains-marketplace-reviews/scripts/render_email_charts.py \
 - Yearly Summary table, KPI cards, recent feedback tables
 
 The output HTML uses inline styles and `<img src="data:image/png;base64,...">` tags, which are universally supported by email clients (Outlook, Gmail, Apple Mail, etc.).
+
+### classify_reviews.py
+
+Semantically classifies review comments into **user-defined categories** using the GitHub Models API (LLM-based). Categories are fully defined by the caller via CLI flags — nothing is hardcoded.
+
+Each review gets a `"category"` key added (array of matching category names). An implicit `"Others"` fallback is always included.
+
+```bash
+# Classify into custom categories
+py .github/skills/jetbrains-marketplace-reviews/scripts/classify_reviews.py \
+  --input /path/to/reviews.json --output /path/to/classified.json \
+  --category "Freeze / Hang: IDE or plugin becomes unresponsive, freezes, hangs, or gets stuck" \
+  --category "Crash: IDE crashes, terminates unexpectedly, or produces fatal errors" \
+  --category "Startup Failure: Plugin fails to start, launch, load, or initialize"
+
+# In-place classification (output defaults to input path)
+py .github/skills/jetbrains-marketplace-reviews/scripts/classify_reviews.py \
+  --input /path/to/reviews.json \
+  --category "Performance: Slow, laggy, high CPU or memory usage" \
+  --category "Authentication: Login, token, or license issues"
+```
+
+**CLI options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--input PATH` | Input JSON file | `<workspace>/output/reviews.json` |
+| `--output PATH` | Output JSON file | same as `--input` (in-place) |
+| `--category "Name: Description"` | Category definition (repeat for each). `"Others"` is always added automatically. | *(required, at least one)* |
+| `--batch-size N` | Reviews per API call | `40` |
+
+**Environment:**
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_TOKEN` | GitHub PAT for the GitHub Models inference API |
+
+**How categories are built**: The agent constructs the `--category` flags from the user's natural-language request. Each flag is a `"Name: Description"` pair where **Name** is the short label and **Description** explains the semantic criteria. The script builds the LLM system prompt dynamically from these definitions.
+
+**Output schema** — each review object gains:
+
+```json
+{
+  "id": 134243,
+  "date": "2026-02-10",
+  "rating": 5,
+  "comment": "...",
+  "category": ["Freeze / Hang"]
+}
+```
+
+A review can belong to multiple categories (except `"Others"`, which is exclusive).
 
 ## API Details
 

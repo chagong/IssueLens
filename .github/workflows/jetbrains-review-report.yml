@@ -34,10 +34,13 @@ jobs:
           6. Rolling Average Rating (per-review)
           7. Yearly Summary
 
-          Categorize all review comments into these categories using keyword/regex matching, and include category visualization charts (bar chart by volume, average rating by category, pie chart distribution) plus a summary table and a highlight table for 'Models Unavailable' showing up to 10 sample reviews:
+          Classify all review comments into these categories, and include category visualization charts (bar chart by volume, average rating by category, pie chart distribution) plus a summary table and a highlight table for 'Models Unavailable' showing up to 10 sample reviews:
 
+          - Freezes & Hangs (IDE or plugin becomes unresponsive, freezes, hangs, or gets stuck)
+          - Crashes (IDE crashes, terminates unexpectedly, or produces fatal errors)
+          - Models Unavailable (user reports missing/inaccessible AI models)
+          - Startup Failures (plugin fails to start, launch, load, or initialize)
           - IDE Compatibility
-          - Bugs & Crashes
           - Chat & Agent Features
           - Comparison with Competitors
           - Praise & Positive
@@ -46,7 +49,12 @@ jobs:
           - General / Uncategorized
           - Pricing & Value
           - Authentication & Login
-          - Models Unavailable (user reports missing/inaccessible AI models)
+
+          Then create 28-day rolling average rating trend chart per below categories:
+          - Freezes & Hangs
+          - Crashes
+          - Startup Failures
+          - Others
 
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 

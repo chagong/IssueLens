@@ -401,11 +401,27 @@ import re as _re
 
 
 def categorize_comments(reviews):
-    """Categorize review comments using keyword/regex matching.
+    """Categorize review comments.
 
-    Returns dict mapping category -> list of reviews, and
-    each review gets a 'categories' key added.
+    If reviews already have a 'category' field (from classify_reviews.py),
+    use those pre-classified categories. Otherwise fall back to regex matching.
+
+    Returns dict mapping category -> list of reviews.
     """
+    # Check if reviews are pre-classified by LLM
+    has_preclassified = any("category" in r for r in reviews)
+
+    if has_preclassified:
+        result = defaultdict(list)
+        for r in reviews:
+            cats = r.get("category", [])
+            if isinstance(cats, str):
+                cats = [cats]
+            for cat in cats:
+                result[cat].append(r)
+        return dict(result)
+
+    # Fallback: regex-based categorization
     compiled = {cat: [_re.compile(p, _re.IGNORECASE) for p in patterns]
                 for cat, patterns in CATEGORIES.items()}
 
@@ -519,6 +535,73 @@ def chart_category_pie(cat_counts):
     return fig_to_base64(fig)
 
 
+def chart_category_rolling_28day(cat_data, category_groups):
+    """Rolling 28-day average rating trend per category group.
+
+    category_groups: dict mapping display label -> list of category names
+    e.g. {"Freezes & Hangs": ["Freezes & Hangs"], "Others": ["Others", ...]}
+    """
+    from datetime import timedelta
+
+    colors = {"Freezes & Hangs": "#e65100", "Crashes": "#d32f2f",
+              "Startup Failures": "#7b1fa2", "Others": "#607d8b"}
+
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    for label, cats in category_groups.items():
+        rated = []
+        for cat in cats:
+            rated.extend([r for r in cat_data.get(cat, [])
+                          if r["rating"] > 0])
+        if len(rated) < 3:
+            continue
+
+        daily = defaultdict(list)
+        for r in rated:
+            daily[r["date"]].append(r["rating"])
+        dates_sorted = sorted(daily.keys())
+        if not dates_sorted:
+            continue
+
+        date_objs = [datetime.strptime(d, "%Y-%m-%d") for d in dates_sorted]
+        start, end = date_objs[0], date_objs[-1]
+        all_dates = []
+        cur = start
+        while cur <= end:
+            all_dates.append(cur)
+            cur += timedelta(days=1)
+
+        rolling_dates = []
+        rolling_vals = []
+        for d in all_dates:
+            window_start = d - timedelta(days=27)
+            window_ratings = []
+            for r in rated:
+                rd = datetime.strptime(r["date"], "%Y-%m-%d")
+                if window_start <= rd <= d:
+                    window_ratings.append(r["rating"])
+            if window_ratings:
+                rolling_dates.append(d)
+                rolling_vals.append(
+                    sum(window_ratings) / len(window_ratings))
+
+        if rolling_vals:
+            c = colors.get(label, "#999")
+            ax.plot(rolling_dates, rolling_vals, color=c, linewidth=1.8,
+                    label=f"{label} (n={len(rated)})", alpha=0.85)
+
+    ax.axhline(y=3.0, color="#999", linestyle="--", linewidth=1,
+               label="Neutral (3.0)")
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Avg Rating")
+    ax.set_ylim(0.5, 5.5)
+    ax.set_title("28-Day Rolling Avg Rating by Category")
+    ax.legend(fontsize=8, loc="upper left")
+    fig.tight_layout()
+    return fig_to_base64(fig)
+
+
 # ── HTML builder ─────────────────────────────────────────────────────────
 
 CARD = ('background:white;border-radius:10px;padding:24px;'
@@ -584,6 +667,19 @@ def build_html(reviews, title="JetBrains Plugin"):
     b64_cat_bar = chart_category_bar(cat_counts) if cat_counts else None
     b64_cat_avg = chart_category_avg_rating(cat_data) if cat_data else None
     b64_cat_pie = chart_category_pie(cat_counts) if cat_counts else None
+
+    # Per-category 28-day rolling average chart
+    all_cat_names = set(cat_data.keys())
+    focus_cats = ["Freezes & Hangs", "Crashes", "Startup Failures"]
+    others_cats = [c for c in all_cat_names if c not in focus_cats]
+    cat_groups = {}
+    for fc in focus_cats:
+        if fc in all_cat_names:
+            cat_groups[fc] = [fc]
+    if others_cats:
+        cat_groups["Others"] = others_cats
+    b64_cat_rolling = (chart_category_rolling_28day(cat_data, cat_groups)
+                       if cat_groups else None)
     print("Charts rendered.")
 
     # Yearly table
@@ -687,6 +783,13 @@ def build_html(reviews, title="JetBrains Plugin"):
                     f'margin:0 0 8px 0;">🍩 Category Distribution</h2>'
                     f'{img_tag(b64_cat_pie, "Category Pie Chart")}</div>'
                     if b64_cat_pie else "")
+    cat_rolling_html = (f'<div style="{CARD_HL}">'
+                        f'<h2 style="color:#e65100;font-size:16px;'
+                        f'margin:0 0 8px 0;">📈 28-Day Rolling Avg Rating '
+                        f'by Category</h2>'
+                        f'{img_tag(b64_cat_rolling, "Category Rolling Avg")}'
+                        f'</div>'
+                        if b64_cat_rolling else "")
 
     # Category summary table
     cat_table_rows = ""
@@ -869,6 +972,8 @@ text-align:center;">Avg Rating</th></tr>
 {cat_pie_html}
 
 {models_highlight}
+
+{cat_rolling_html}
 
 <div style="{CARD}">
   <h2 style="color:#ef5350;font-size:16px;margin:0 0 12px 0;">\

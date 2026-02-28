@@ -2,7 +2,7 @@ name: Triage Issues For JetBrains Copilot
 
 on:
   schedule:
-    - cron: '0 1 * * 1-5'  # Runs every weekday at 09:00 Shanghai Time (UTC+8)
+    - cron: '0 0 * * 1-5'  # Runs every weekday at 08:00 Shanghai Time (UTC+8)
   workflow_dispatch:
     inputs:
       user_query:

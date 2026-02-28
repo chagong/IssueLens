@@ -27,3 +27,4 @@ venv/
 .env
 tools/*.json
 tools/*.png
+output/*

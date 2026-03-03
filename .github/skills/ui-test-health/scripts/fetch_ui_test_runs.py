@@ -169,10 +169,38 @@ def fetch_artifacts_for_run(owner: str, repo: str, run_id: int, token: str) -> l
         return []
 
 
+def _extract_failure_message(elem) -> str:
+    """Extract a concise failure message from a <failure> or <error> XML element.
+
+    Prefers the element text (full stack trace) over the message attribute, then
+    strips everything from the first stack-frame line ('\n\tat') onward so only the
+    assertion/exception message is returned, not the full trace.
+    """
+    if elem is None:
+        return ""
+    text = (elem.text or "").strip()
+    if not text:
+        text = elem.get("message", "").strip()
+    if not text:
+        return ""
+    # Cut off at first stack frame to keep only the assertion message
+    cut = text.find("\n\tat ")
+    if cut != -1:
+        text = text[:cut].strip()
+    # Also cut at common "at " patterns without \n prefix
+    for marker in ("\n\t", "\r\n\t"):
+        cut = text.find(marker)
+        if cut != -1:
+            text = text[:cut].strip()
+            break
+    return text
+
+
 def download_and_parse_junit_xml(owner: str, repo: str, artifact_id: int, token: str) -> list:
     """Download artifact zip and parse JUnit XML test cases.
 
-    Returns list of {test_class, test_case, passed} dicts.
+    Returns list of {test_class, test_case, passed, failure_message} dicts.
+    failure_message is "" for passing tests.
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip"
     req = urllib.request.Request(
@@ -208,13 +236,15 @@ def download_and_parse_junit_xml(owner: str, repo: str, artifact_id: int, token:
                         # Use simple class name (strip package prefix)
                         short_class = classname.split(".")[-1] if classname else ""
                         test_case = tc.get("name", "")
-                        failed = tc.find("failure") is not None or tc.find("error") is not None
+                        failure_elem = tc.find("failure") or tc.find("error")
+                        failed = failure_elem is not None
                         skipped = tc.find("skipped") is not None
                         if short_class and test_case and not skipped:
                             results.append({
                                 "test_class": short_class,
                                 "test_case": test_case,
                                 "passed": not failed,
+                                "failure_message": _extract_failure_message(failure_elem),
                             })
     except Exception as exc:
         print(f"  Warning: could not parse artifact zip {artifact_id}: {exc}", file=sys.stderr)
@@ -456,6 +486,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                             "run_attempt": att,
                             "conclusion": tc_conclusion,
                             "run_url": run_url,
+                            "failure_message": case.get("failure_message", "") if not case["passed"] else "",
                         })
                 else:
                     # No artifact / no matching cases — fall back: synthesize a single
@@ -554,16 +585,25 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         sha, ide_type, ide_version, test_class, test_case = group_key
         conclusions = [e["conclusion"] for e in entries]
         status, retries_needed = classify_retry_pattern(conclusions)
+        # Pick the most recent non-empty failure message from the entries
+        latest_failure_msg = ""
+        for e in reversed(entries):
+            msg = e.get("failure_message", "")
+            if msg:
+                latest_failure_msg = msg
+                break
         tc_classified[group_key] = {
             "status": status,
             "retries_needed": retries_needed,
             "attempts": len(entries),
             "latest_run_url": entries[-1]["run_url"],
+            "failure_message": latest_failure_msg,
         }
 
     test_case_counts: dict = defaultdict(lambda: {"passed_first": 0, "passed_after_retry": 0, "never_passed": 0, "in_progress": 0})
     tc_retry_dist: dict = defaultdict(lambda: defaultdict(int))
-    tc_latest_run: dict = {}  # (ide_type, ide_version, test_class, test_case) -> latest_run_url
+    tc_latest_run: dict = {}     # (ide_type, ide_version, test_class, test_case) -> latest_run_url
+    tc_failure_msg: dict = {}    # (ide_type, ide_version, test_class, test_case) -> latest failure_message
 
     for (sha, ide_type, ide_version, test_class, test_case), info in tc_classified.items():
         tk = (ide_type, ide_version, test_class, test_case)
@@ -573,6 +613,9 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         # Track latest run URL for worst-test reporting (prefer never_passed runs)
         if info["status"] in ("never_passed", "passed_after_retry"):
             tc_latest_run[tk] = info["latest_run_url"]
+            msg = info.get("failure_message", "")
+            if msg:
+                tc_failure_msg[tk] = msg
 
     per_test_case = []
     for (ide_type, ide_version, test_class, test_case), counts in sorted(test_case_counts.items()):
@@ -603,6 +646,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
             "any_attempt_pass_rate_pct": safe_pct(pf + par, total_resolved),
             "flakiness_score": safe_score(par, total_resolved),
             "latest_run_url": tc_latest_run.get(tk, ""),
+            "failure_message": tc_failure_msg.get(tk, ""),
         })
 
     # --- Worst flaky test case: highest flakiness_score, breaking ties by never_passed ---
@@ -618,6 +662,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
             "flakiness_score": worst["flakiness_score"],
             "never_passed": worst["never_passed"],
             "latest_run_url": worst["latest_run_url"],
+            "failure_message": worst["failure_message"],
         }
 
     # --- Aggregate per PR ---

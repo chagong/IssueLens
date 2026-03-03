@@ -73,6 +73,30 @@ def build_message(data: dict) -> str:
             root_cause,
         ]
 
+    # Unstable test cases: show success rate + trimmed failure message
+    unstable = [
+        tc for tc in per_tc
+        if tc["first_attempt_pass_rate_pct"] < 100 and tc["total_instances"] >= 2
+    ]
+    unstable.sort(key=lambda x: (x["first_attempt_pass_rate_pct"], -x["total_instances"]))
+    if unstable:
+        lines += ["", "### ⚠️ Unstable Test Cases", ""]
+        for tc in unstable[:5]:
+            label = f"{tc['ide_type']} {tc['ide_version']} — {tc['test_class']}.{tc['test_case']}"
+            run_link = f" · [run]({tc['latest_run_url']})" if tc.get("latest_run_url") else ""
+            lines.append(
+                f"**{label}**{run_link}  "
+                f"Success: **{tc['first_attempt_pass_rate_pct']}%** "
+                f"({tc['passed_first_attempt']}/{tc['total_instances']} runs) · "
+                f"Any-attempt: {tc['any_attempt_pass_rate_pct']}%"
+            )
+            msg = tc.get("failure_message", "").strip()
+            if msg:
+                if len(msg) > 300:
+                    msg = msg[:300] + "…"
+                lines.append(f"> 💥 `{msg}`")
+            lines.append("")
+
     return "\n".join(lines)
 
 

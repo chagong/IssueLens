@@ -49,9 +49,45 @@
           "description": "never_passed / total_resolved * 100" }
       }
     },
+    "per_test_case": {
+      "type": "array",
+      "description": "One entry per unique (ide_type, ide_version, test_class, test_case) combination, parsed from JUnit XML artifacts. Falls back to test_class name when no artifact is available. Sorted alphabetically.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ide_type":                    { "type": "string" },
+          "ide_version":                 { "type": "string" },
+          "test_class":                  { "type": "string" },
+          "test_case":                   { "type": "string", "description": "Individual test method name, e.g. testChatCompletion" },
+          "total_instances":             { "type": "integer" },
+          "passed_first_attempt":        { "type": "integer" },
+          "passed_after_retry":          { "type": "integer" },
+          "retry_distribution":          { "type": "object", "additionalProperties": { "type": "integer" } },
+          "never_passed":                { "type": "integer" },
+          "in_progress":                 { "type": "integer" },
+          "first_attempt_pass_rate_pct": { "type": "number" },
+          "any_attempt_pass_rate_pct":   { "type": "number" },
+          "flakiness_score":             { "type": "number" },
+          "latest_run_url":              { "type": "string", "description": "URL of most recent failing/flaky run for this test case" }
+        }
+      }
+    },
+    "worst_flaky_test_case": {
+      "type": ["object", "null"],
+      "description": "The single test case with the highest flakiness_score (or most never_passed). Null if no flaky test cases exist.",
+      "properties": {
+        "ide_type":         { "type": "string" },
+        "ide_version":      { "type": "string" },
+        "test_class":       { "type": "string" },
+        "test_case":        { "type": "string" },
+        "flakiness_score":  { "type": "number" },
+        "never_passed":     { "type": "integer" },
+        "latest_run_url":   { "type": "string" }
+      }
+    },
     "per_test_class": {
       "type": "array",
-      "description": "One entry per unique (ide_type, ide_version, test_class) combination; sorted alphabetically",
+      "description": "One entry per unique (ide_type, ide_version, test_class) combination; sorted alphabetically. Rollup of per_test_case.",
       "items": {
         "type": "object",
         "properties": {

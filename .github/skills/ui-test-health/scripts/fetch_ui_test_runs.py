@@ -8,11 +8,13 @@ per-PR test results for the given look-back window.
 Usage:
     python fetch_ui_test_runs.py [--owner OWNER] [--repo REPO] [--days DAYS]
                                  [--workflow-name NAME] [--output PATH]
+                                 [--artifact-name NAME]
 
 Environment Variables:
     GITHUB_ACCESS_TOKEN or GITHUB_PAT: GitHub personal access token with repo and actions:read scopes
 """
 import argparse
+import io
 import json
 import os
 import re
@@ -21,6 +23,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -149,6 +153,72 @@ def fetch_workflow_runs(owner: str, repo: str, wf_id: int, since_iso: str, token
 # ---------------------------------------------------------------------------
 # Step 3: Fetch jobs per run attempt
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Step 3b: Fetch & parse JUnit XML artifacts for test-case granularity
+# ---------------------------------------------------------------------------
+
+def fetch_artifacts_for_run(owner: str, repo: str, run_id: int, token: str) -> list:
+    """Return list of artifacts for a workflow run: [{id, name, archive_download_url}]."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts"
+    try:
+        data = github_get(url, token, params={"per_page": 100})
+        return data.get("artifacts", [])
+    except Exception as exc:
+        print(f"  Warning: could not fetch artifacts for run {run_id}: {exc}", file=sys.stderr)
+        return []
+
+
+def download_and_parse_junit_xml(owner: str, repo: str, artifact_id: int, token: str) -> list:
+    """Download artifact zip and parse JUnit XML test cases.
+
+    Returns list of {test_class, test_case, passed} dicts.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read()
+    except Exception as exc:
+        print(f"  Warning: could not download artifact {artifact_id}: {exc}", file=sys.stderr)
+        return []
+
+    results = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            for name in zf.namelist():
+                if not name.endswith(".xml"):
+                    continue
+                try:
+                    root = ET.fromstring(zf.read(name).decode("utf-8", errors="replace"))
+                except ET.ParseError:
+                    continue
+                # Handle both <testsuite> and <testsuites> wrapping <testsuite>
+                suites = root.findall(".//testsuite") if root.tag != "testsuite" else [root]
+                for suite in suites:
+                    for tc in suite.findall("testcase"):
+                        classname = tc.get("classname", "") or suite.get("name", "")
+                        # Use simple class name (strip package prefix)
+                        short_class = classname.split(".")[-1] if classname else ""
+                        test_case = tc.get("name", "")
+                        failed = tc.find("failure") is not None or tc.find("error") is not None
+                        skipped = tc.find("skipped") is not None
+                        if short_class and test_case and not skipped:
+                            results.append({
+                                "test_class": short_class,
+                                "test_case": test_case,
+                                "passed": not failed,
+                            })
+    except Exception as exc:
+        print(f"  Warning: could not parse artifact zip {artifact_id}: {exc}", file=sys.stderr)
+    return results
 
 JOB_RE = re.compile(r"UI Test \((\w+),\s*([\d.]+),\s*(\w+)\)")
 
@@ -295,13 +365,18 @@ def safe_score(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 4)
 
 
-def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token: str) -> dict:
+def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token: str,
+                      artifact_name_pattern: str = "test-results") -> dict:
     """
     Core aggregation: group runs by (head_sha, test_key), classify retry patterns,
     and compute all metrics.
     """
     # Structure: groups[(head_sha, ide_type, ide_version, test_class)] = list of {run_attempt, conclusion, run_url}
     groups: dict = defaultdict(list)
+    # Test-case groups: (head_sha, ide_type, ide_version, test_class, test_case) -> list of {run_attempt, conclusion, run_url}
+    tc_groups: dict = defaultdict(list)
+    # Cache artifact results per (run_id, attempt) to avoid redundant downloads
+    artifact_cache: dict = {}  # (run_id, attempt) -> list of {test_class, test_case, passed}
     sha_pr_map: dict = {}      # head_sha -> pr_info
     sha_created_at: dict = {}  # head_sha -> most recent created_at (ISO string)
 
@@ -344,13 +419,53 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                 if key_tuple is None:
                     continue
                 ide_type, ide_version, test_class = key_tuple
+                job_conclusion = job.get("conclusion") or (conclusion if att == attempt else "failure")
                 group_key = (sha, ide_type, ide_version, test_class)
                 groups[group_key].append({
                     "run_attempt": att,
-                    "conclusion": job.get("conclusion") or (conclusion if att == attempt else "failure"),
+                    "conclusion": job_conclusion,
                     "run_url": run_url,
                 })
                 parsed_any = True
+
+                # --- Test-case level: try to parse JUnit XML artifact for this job ---
+                # Only fetch artifacts once per (run_id, attempt) and reuse across jobs
+                cache_key = (run_id, att)
+                if cache_key not in artifact_cache:
+                    artifacts = fetch_artifacts_for_run(owner, repo, run_id, token)
+                    matching = [
+                        a for a in artifacts
+                        if artifact_name_pattern.lower() in a.get("name", "").lower()
+                    ]
+                    if matching:
+                        parsed_cases = download_and_parse_junit_xml(
+                            owner, repo, matching[0]["id"], token
+                        )
+                    else:
+                        parsed_cases = []
+                    artifact_cache[cache_key] = parsed_cases
+
+                junit_cases = artifact_cache[cache_key]
+                # Filter cases belonging to this job's test_class
+                job_cases = [c for c in junit_cases if c["test_class"] == test_class]
+                if job_cases:
+                    for case in job_cases:
+                        tc_conclusion = "success" if case["passed"] else "failure"
+                        tc_key = (sha, ide_type, ide_version, test_class, case["test_case"])
+                        tc_groups[tc_key].append({
+                            "run_attempt": att,
+                            "conclusion": tc_conclusion,
+                            "run_url": run_url,
+                        })
+                else:
+                    # No artifact / no matching cases — fall back: synthesize a single
+                    # test case named after the class using the job-level conclusion
+                    tc_key = (sha, ide_type, ide_version, test_class, test_class)
+                    tc_groups[tc_key].append({
+                        "run_attempt": att,
+                        "conclusion": job_conclusion,
+                        "run_url": run_url,
+                    })
 
         # If no test jobs parsed but run has a conclusion, still record at SHA level
         if not parsed_any and sha:
@@ -423,6 +538,87 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
             "flakiness_score": safe_score(par, total_resolved),
         }
         per_test_class.append(entry)
+
+    # --- Aggregate per test case ---
+    # Deduplicate tc_groups the same way as groups
+    for gk in tc_groups:
+        seen_attempts = {}
+        for entry in tc_groups[gk]:
+            a = entry["run_attempt"]
+            if a not in seen_attempts:
+                seen_attempts[a] = entry
+        tc_groups[gk] = sorted(seen_attempts.values(), key=lambda e: e["run_attempt"])
+
+    tc_classified: dict = {}
+    for group_key, entries in tc_groups.items():
+        sha, ide_type, ide_version, test_class, test_case = group_key
+        conclusions = [e["conclusion"] for e in entries]
+        status, retries_needed = classify_retry_pattern(conclusions)
+        tc_classified[group_key] = {
+            "status": status,
+            "retries_needed": retries_needed,
+            "attempts": len(entries),
+            "latest_run_url": entries[-1]["run_url"],
+        }
+
+    test_case_counts: dict = defaultdict(lambda: {"passed_first": 0, "passed_after_retry": 0, "never_passed": 0, "in_progress": 0})
+    tc_retry_dist: dict = defaultdict(lambda: defaultdict(int))
+    tc_latest_run: dict = {}  # (ide_type, ide_version, test_class, test_case) -> latest_run_url
+
+    for (sha, ide_type, ide_version, test_class, test_case), info in tc_classified.items():
+        tk = (ide_type, ide_version, test_class, test_case)
+        test_case_counts[tk][info["status"]] += 1
+        if info["status"] == "passed_after_retry" and info["retries_needed"] > 0:
+            tc_retry_dist[tk][info["retries_needed"]] += 1
+        # Track latest run URL for worst-test reporting (prefer never_passed runs)
+        if info["status"] in ("never_passed", "passed_after_retry"):
+            tc_latest_run[tk] = info["latest_run_url"]
+
+    per_test_case = []
+    for (ide_type, ide_version, test_class, test_case), counts in sorted(test_case_counts.items()):
+        pf = counts["passed_first"]
+        par = counts["passed_after_retry"]
+        np_ = counts["never_passed"]
+        ip = counts["in_progress"]
+        total_instances = pf + par + np_ + ip
+        total_resolved = pf + par + np_
+        tk = (ide_type, ide_version, test_class, test_case)
+        dist_raw = tc_retry_dist.get(tk, {})
+        retry_distribution = {}
+        for n in sorted(dist_raw.keys()):
+            key = str(n) if n <= 2 else "3+"
+            retry_distribution[key] = retry_distribution.get(key, 0) + dist_raw[n]
+        per_test_case.append({
+            "ide_type": ide_type,
+            "ide_version": ide_version,
+            "test_class": test_class,
+            "test_case": test_case,
+            "total_instances": total_instances,
+            "passed_first_attempt": pf,
+            "passed_after_retry": par,
+            "retry_distribution": retry_distribution,
+            "never_passed": np_,
+            "in_progress": ip,
+            "first_attempt_pass_rate_pct": safe_pct(pf, total_resolved),
+            "any_attempt_pass_rate_pct": safe_pct(pf + par, total_resolved),
+            "flakiness_score": safe_score(par, total_resolved),
+            "latest_run_url": tc_latest_run.get(tk, ""),
+        })
+
+    # --- Worst flaky test case: highest flakiness_score, breaking ties by never_passed ---
+    worst_flaky_test_case = None
+    candidates = [tc for tc in per_test_case if tc["flakiness_score"] > 0 or tc["never_passed"] > 0]
+    if candidates:
+        worst = max(candidates, key=lambda x: (x["flakiness_score"], x["never_passed"]))
+        worst_flaky_test_case = {
+            "ide_type": worst["ide_type"],
+            "ide_version": worst["ide_version"],
+            "test_class": worst["test_class"],
+            "test_case": worst["test_case"],
+            "flakiness_score": worst["flakiness_score"],
+            "never_passed": worst["never_passed"],
+            "latest_run_url": worst["latest_run_url"],
+        }
 
     # --- Aggregate per PR ---
     # Group classified entries by sha first
@@ -589,6 +785,8 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     return {
         "aggregate": aggregate,
         "per_test_class": per_test_class,
+        "per_test_case": per_test_case,
+        "worst_flaky_test_case": worst_flaky_test_case,
         "per_pr": per_pr,
         "top_flaky_tests": top_flaky,
         "prs_with_persistent_failures": prs_with_failures,
@@ -606,6 +804,7 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=3, help="Look-back window in days (default: 3)")
     parser.add_argument("--workflow-name", default="UI Test New", help="Exact workflow name (default: 'UI Test New')")
     parser.add_argument("--output", default="ui_test_health.json", help="Output JSON file path")
+    parser.add_argument("--artifact-name", default="test-results", help="Substring to match artifact names for JUnit XML (default: 'test-results')")
     args = parser.parse_args()
 
     token = get_token()
@@ -627,7 +826,8 @@ def main() -> None:
     sha_to_pr = fetch_recent_prs(args.owner, args.repo, token)
 
     # Aggregate
-    result = aggregate_results(runs, sha_to_pr, args.owner, args.repo, token)
+    result = aggregate_results(runs, sha_to_pr, args.owner, args.repo, token,
+                               artifact_name_pattern=args.artifact_name)
 
     # Enrich any per_pr / prs_with_persistent_failures entries that still lack title/author.
     # A shared cache ensures each missing PR number is fetched only once across both lists.
@@ -659,6 +859,16 @@ def main() -> None:
     run_count = report["metadata"]["total_workflow_runs"]
     pass_rate = report["aggregate"]["pass_rate_any_attempt_pct"]
     print(f"Saved report to {args.output} — {pr_count} PRs, {run_count} workflow runs, {pass_rate}% pass rate (any attempt)")
+
+    # Write has_flaky_tests flag to GITHUB_OUTPUT for downstream workflow steps
+    has_flaky = any(
+        tc["flakiness_score"] > 0.15 or tc["never_passed"] > 0
+        for tc in report.get("per_test_case", [])
+    )
+    github_output = os.environ.get("GITHUB_OUTPUT")
+    if github_output:
+        with open(github_output, "a") as out:
+            out.write(f"has_flaky_tests={'true' if has_flaky else 'false'}\n")
 
 
 if __name__ == "__main__":

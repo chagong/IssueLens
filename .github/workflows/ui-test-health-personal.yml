@@ -23,6 +23,14 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
       - name: Fetch UI Test Health Data
         id: fetch
         run: |
@@ -36,9 +44,37 @@ jobs:
         env:
           GITHUB_PAT: ${{ secrets.NLIU_PAT_COPILOT_JETBRAINS }}
 
+      - name: Extract Worst Flaky Test Case
+        id: worst
+        run: python .github/skills/ui-test-health/scripts/extract_worst_test.py
+
+      - name: Analyze Root Cause with Copilot CLI
+        id: root_cause
+        if: ${{ steps.worst.outputs.has_flaky_tests == 'true' }}
+        run: |
+          worst=$(cat output/worst_test.json)
+          test_name=$(echo "$worst" | jq -r '"\(.ide_type) \(.ide_version) — \(.test_class).\(.test_case)"')
+          run_url=$(echo "$worst" | jq -r '.latest_run_url')
+
+          prompt="Analyze why the UI test '${test_name}' is flaky or failing.
+          Latest run: ${run_url}
+          The run artifacts (screenshots, videos, logs) are available on that GitHub Actions run page.
+          Please examine the artifacts and job logs from that run to identify the root cause pattern and suggest a fix."
+
+          echo "Analyzing root cause for: ${test_name}"
+          analysis=$(copilot --agent=issuelens --prompt "$prompt" 2>&1 || true)
+          echo "root_cause_analysis<<EOF" >> $GITHUB_OUTPUT
+          echo "$analysis" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.NLIU_PAT_COPILOT_JETBRAINS }}
+          GH_TOKEN: ${{ secrets.NLIU_PAT_COPILOT_JETBRAINS }}
+
       - name: Build Notification Payload
         id: payload
         run: python .github/skills/ui-test-health/scripts/build_notification_payload.py
+        env:
+          ROOT_CAUSE_ANALYSIS: ${{ steps.root_cause.outputs.root_cause_analysis }}
 
       - name: Trigger Personal Notification
         if: ${{ github.event_name == 'schedule' || inputs.enable_notification == true }}

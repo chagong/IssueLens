@@ -62,11 +62,13 @@ Always surface at the end of the report:
 | Retry distribution | if `total_retry_attempts == 0`: `N/A`; else: render each key present in `retry_distribution_pct` as `1 retry: {retry_distribution_pct["1"]}%, 2 retries: {retry_distribution_pct["2"]}%, 3+ retries: {retry_distribution_pct["3+"]}%` (omit keys with 0%) |
 | Never-passed rate | {never_passed_rate_pct}% |
 
-### 🔬 Per-Test-Class Breakdown
+### 🔬 Per-Test-Case Breakdown
 
-| IDE | Version | Test Class | First-Pass% | Any-Pass% | Flakiness |
-|---|---|---|---|---|---|
-| {ide_type} | {ide_version} | {test_class} | {first_attempt_pass_rate_pct}% | {any_attempt_pass_rate_pct}% | {flakiness_emoji} {flakiness_score} |
+| IDE | Version | Test Class | Test Case | First-Pass% | Any-Pass% | Flakiness |
+|---|---|---|---|---|---|---|
+| {ide_type} | {ide_version} | {test_class} | {test_case} | {first_attempt_pass_rate_pct}% | {any_attempt_pass_rate_pct}% | {flakiness_emoji} {flakiness_score} |
+
+Rows are sorted by worst flakiness first within each class. Data comes from JUnit XML artifacts uploaded per run; falls back to job-level conclusion if no artifact is found.
 
 Flakiness emoji: 🟢 < 0.15 (stable) · 🟡 0.15–0.35 (moderate) · 🔴 > 0.35 (high)
 

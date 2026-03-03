@@ -3,36 +3,22 @@ import json
 import os
 
 
-def build_retry_dist_str(rdist: dict) -> str:
-    if not rdist:
-        return "N/A"
-    parts = []
-    if "1" in rdist:
-        parts.append(f"1 retry: {rdist['1']}%")
-    if "2" in rdist:
-        parts.append(f"2 retries: {rdist['2']}%")
-    if "3+" in rdist:
-        parts.append(f"3+ retries: {rdist['3+']}%")
-    return ", ".join(parts)
-
-
 def build_message(data: dict) -> str:
-    meta     = data["metadata"]
-    agg      = data["aggregate"]
-    per_tc   = data["per_test_class"]
-    failures = data["prs_with_persistent_failures"]
+    meta    = data["metadata"]
+    agg     = data["aggregate"]
+    per_tc  = data.get("per_test_case") or []
+    worst   = data.get("worst_flaky_test_case")
 
     since = meta["since"][:10]
     until = meta["until"][:10]
     prs   = meta["total_prs_analyzed"]
     runs  = meta["total_workflow_runs"]
 
-    pass_any        = agg["pass_rate_any_attempt_pct"]
-    pass_first      = agg["first_attempt_pass_rate_pct"]
-    retried         = agg["total_retry_attempts"]
-    retry_succ      = agg["retry_success_rate_pct"]
-    never           = agg["never_passed_rate_pct"]
-    retry_dist_str  = build_retry_dist_str(agg.get("retry_distribution_pct", {}))
+    pass_any   = agg["pass_rate_any_attempt_pct"]
+    pass_first = agg["first_attempt_pass_rate_pct"]
+    retried    = agg["total_retry_attempts"]
+    retry_succ = agg["retry_success_rate_pct"]
+    never      = agg["never_passed_rate_pct"]
 
     lines = [
         f"## 📊 UI Test Health — Last 3 Days ({since} → {until})",
@@ -40,21 +26,52 @@ def build_message(data: dict) -> str:
         f"**PRs analyzed:** {prs} &nbsp;|&nbsp; **Runs:** {runs} &nbsp;|&nbsp; **Pass (any):** {pass_any}% &nbsp;|&nbsp; **First-attempt:** {pass_first}%",
         f"**Re-runs:** {retried} &nbsp;|&nbsp; **Retry success:** {retry_succ}% &nbsp;|&nbsp; **Never-passed:** {never}%",
         "",
-        "### 🔬 Per-Test-Class",
-        "",
-        "| IDE | Version | Test Class | First-Pass% | Any-Pass% | Flakiness |",
-        "|---|---|---|---|---|---|",
     ]
 
-    for tc in per_tc:
-        score = tc["flakiness_score"]
-        emoji = "🟢" if score < 0.15 else ("🟡" if score <= 0.35 else "🔴")
-        lines.append(
-            f"| {tc['ide_type']} | {tc['ide_version']} | {tc['test_class']}"
-            f" | {tc['first_attempt_pass_rate_pct']}%"
-            f" | {tc['any_attempt_pass_rate_pct']}%"
-            f" | {emoji} {score} |"
-        )
+    # Worst flaky test case callout
+    if worst:
+        score = worst["flakiness_score"]
+        run_url = worst.get("latest_run_url", "")
+        label = f"{worst['ide_type']} {worst['ide_version']} — {worst['test_class']}.{worst['test_case']}"
+        run_link = f" — [latest run]({run_url})" if run_url else ""
+        lines += [
+            f"⚠️ **Worst:** `{label}` &nbsp;|&nbsp; flakiness: **{score}** &nbsp;|&nbsp; never-passed: **{worst['never_passed']}×**{run_link}",
+            "",
+        ]
+
+    # Per-test-case table, grouped by (ide_type, ide_version, test_class)
+    if per_tc:
+        lines += [
+            "### 🔬 Per-Test-Case",
+            "",
+            "| IDE | Version | Test Class | Test Case | First-Pass% | Any-Pass% | Flakiness |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        # Sort: worst flakiness first, then alphabetically
+        sorted_tc = sorted(per_tc, key=lambda x: (
+            x["ide_type"], x["ide_version"], x["test_class"],
+            -x["flakiness_score"], -x["never_passed"], x["test_case"]
+        ))
+        for tc in sorted_tc:
+            score = tc["flakiness_score"]
+            emoji = "🟢" if score < 0.15 else ("🟡" if score <= 0.35 else "🔴")
+            lines.append(
+                f"| {tc['ide_type']} | {tc['ide_version']} | {tc['test_class']}"
+                f" | {tc['test_case']}"
+                f" | {tc['first_attempt_pass_rate_pct']}%"
+                f" | {tc['any_attempt_pass_rate_pct']}%"
+                f" | {emoji} {score} |"
+            )
+
+    # Root cause analysis from Copilot CLI (injected via env var by workflow)
+    root_cause = os.environ.get("ROOT_CAUSE_ANALYSIS", "").strip()
+    if root_cause:
+        lines += [
+            "",
+            "### 🤖 Root Cause Analysis",
+            "",
+            root_cause,
+        ]
 
     return "\n".join(lines)
 

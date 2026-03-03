@@ -34,7 +34,7 @@ jobs:
             --workflow-name "UI Test New" \
             --output output/ui_test_health.json
         env:
-          GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+          GITHUB_PAT: ${{ secrets.PAT }}
 
       - name: Build Notification Payload
         id: payload

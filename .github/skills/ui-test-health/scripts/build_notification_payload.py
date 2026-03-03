@@ -37,16 +37,9 @@ def build_message(data: dict) -> str:
     lines = [
         f"## 📊 UI Test Health — Last 3 Days ({since} → {until})",
         "",
-        "| Metric | Value |",
-        "|---|---|",
-        f"| PRs analyzed | {prs} |",
-        f"| Workflow runs | {runs} |",
-        f"| Pass rate (any attempt) | {pass_any}% |",
-        f"| First-attempt pass rate | {pass_first}% |",
-        f"| Re-runs triggered | {retried} |",
-        f"| Retry success rate | {retry_succ}% |",
-        f"| Retry distribution | {retry_dist_str} |",
-        f"| Never-passed rate | {never}% |",
+        "| PRs Analyzed | Workflow Runs | Pass Rate (Any) | First-Attempt Pass | Re-runs | Retry Success | Never-Passed |",
+        "|---|---|---|---|---|---|---|",
+        f"| {prs} | {runs} | {pass_any}% | {pass_first}% | {retried} | {retry_succ}% | {never}% |",
         "",
         "### 🔬 Per-Test-Class",
         "",
@@ -63,20 +56,6 @@ def build_message(data: dict) -> str:
             f" | {tc['any_attempt_pass_rate_pct']}%"
             f" | {emoji} {score} |"
         )
-
-    if failures:
-        lines += ["", f"### 🚨 PRs with Persistent Failures ({len(failures)} PRs)", ""]
-        for pr in failures[:10]:  # cap at 10 to stay within Teams message limits
-            pn = pr.get("pr_number", "?")
-            pt = pr.get("pr_title", "")
-            pu = pr.get("pr_url", "")
-            pa = pr.get("pr_author", "")
-            lines.append(f"- [PR #{pn}]({pu}) {pt} · @{pa}")
-            for ft in pr.get("failed_tests", []):
-                lines.append(
-                    f"  - ❌ `{ft['ide_type']} {ft['ide_version']} — {ft['test_class']}`"
-                    f" ({ft['attempts']} attempt(s))"
-                )
 
     return "\n".join(lines)
 

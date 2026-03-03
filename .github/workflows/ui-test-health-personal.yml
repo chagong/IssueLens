@@ -58,8 +58,16 @@ jobs:
 
           prompt="Analyze why the UI test '${test_name}' is flaky or failing.
           Latest run: ${run_url}
-          The run artifacts (screenshots, videos, logs) are available on that GitHub Actions run page.
-          Please examine the artifacts and job logs from that run to identify the root cause pattern and suggest a fix."
+
+          To find the real failure reason, follow these steps:
+          1. On the GitHub Actions run page (${run_url}), go to the 'Artifacts' section at the bottom.
+          2. Find the artifact named 'ui-test-error-reports_*' (matching the IDE type/version/test class for this test). Download it.
+          3. Unzip the artifact. Open the file at 'ui-tests-new/build/reports/tests/test/index.html' — this is the Gradle HTML test report with the actual exception/assertion failure.
+          4. Also check the job logs for any setup or environment errors (display server, plugin loading, etc.).
+
+          Note: There are no JUnit XML downloadable artifacts for this workflow — the failure details are only in the HTML report inside the 'ui-test-error-reports_*' artifact.
+
+          Based on the failure details you find, identify the root cause pattern and suggest a fix."
 
           echo "Analyzing root cause for: ${test_name}"
 

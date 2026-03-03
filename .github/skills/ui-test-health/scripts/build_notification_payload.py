@@ -37,9 +37,8 @@ def build_message(data: dict) -> str:
     lines = [
         f"## 📊 UI Test Health — Last 3 Days ({since} → {until})",
         "",
-        "| PRs Analyzed | Workflow Runs | Pass Rate (Any) | First-Attempt Pass | Re-runs | Retry Success | Never-Passed |",
-        "|---|---|---|---|---|---|---|",
-        f"| {prs} | {runs} | {pass_any}% | {pass_first}% | {retried} | {retry_succ}% | {never}% |",
+        f"**PRs analyzed:** {prs} &nbsp;|&nbsp; **Runs:** {runs} &nbsp;|&nbsp; **Pass (any):** {pass_any}% &nbsp;|&nbsp; **First-attempt:** {pass_first}%",
+        f"**Re-runs:** {retried} &nbsp;|&nbsp; **Retry success:** {retry_succ}% &nbsp;|&nbsp; **Never-passed:** {never}%",
         "",
         "### 🔬 Per-Test-Class",
         "",

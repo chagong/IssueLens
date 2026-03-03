@@ -58,6 +58,12 @@ def github_get(url: str, token: str, params: dict | None = None) -> dict | list:
                     time.sleep(60)
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                body = exc.read().decode("utf-8", errors="replace")
+                print(f"HTTP 404 Not Found: {url}", file=sys.stderr)
+                print(f"Response body: {body}", file=sys.stderr)
+                token_len = len(token) if token else 0
+                print(f"Token length: {token_len}", file=sys.stderr)
             if exc.code == 429 or exc.code == 403:
                 wait = 60 * (attempt + 1)
                 print(f"Rate limited (HTTP {exc.code}), waiting {wait}s...", file=sys.stderr)

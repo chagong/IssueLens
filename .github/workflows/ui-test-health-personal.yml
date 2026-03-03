@@ -62,10 +62,19 @@ jobs:
           Please examine the artifacts and job logs from that run to identify the root cause pattern and suggest a fix."
 
           echo "Analyzing root cause for: ${test_name}"
-          analysis=$(copilot --agent=issuelens --prompt "$prompt" 2>&1 || true)
-          echo "root_cause_analysis<<EOF" >> $GITHUB_OUTPUT
-          echo "$analysis" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Write output directly to file to avoid shell variable multiline truncation
+          copilot --agent=issuelens --prompt "$prompt" > output/root_cause_analysis.txt 2>&1 || true
+
+          echo "--- Root cause analysis output ---"
+          cat output/root_cause_analysis.txt
+
+          # Use unique delimiter to safely write multiline content to GITHUB_OUTPUT
+          {
+            echo "root_cause_analysis<<__ANALYSIS_EOF__"
+            cat output/root_cause_analysis.txt
+            echo "__ANALYSIS_EOF__"
+          } >> "$GITHUB_OUTPUT"
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.NLIU_PAT_COPILOT_JETBRAINS }}
           GH_TOKEN: ${{ secrets.NLIU_PAT_COPILOT_JETBRAINS }}

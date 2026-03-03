@@ -296,7 +296,8 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     """
     # Structure: groups[(head_sha, ide_type, ide_version, test_class)] = list of {run_attempt, conclusion, run_url}
     groups: dict = defaultdict(list)
-    sha_pr_map: dict = {}  # head_sha -> pr_info
+    sha_pr_map: dict = {}      # head_sha -> pr_info
+    sha_created_at: dict = {}  # head_sha -> most recent created_at (ISO string)
 
     total_runs = len(runs)
     print(f"Fetching jobs for {total_runs} runs...", file=sys.stderr)
@@ -307,10 +308,14 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         sha = run.get("head_sha", "")
         conclusion = run.get("conclusion")  # None if in progress
         run_url = run.get("html_url", "")
+        created_at = run.get("created_at", "")
 
         pr_info = resolve_pr_info(run, sha_to_pr)
         if sha not in sha_pr_map:
             sha_pr_map[sha] = pr_info
+        # Keep the most recent created_at seen for this SHA (ISO strings sort lexicographically)
+        if created_at > sha_created_at.get(sha, ""):
+            sha_created_at[sha] = created_at
 
         if (i % 10) == 0 or i == total_runs:
             print(f"  Processing run {i}/{total_runs}...", file=sys.stderr)
@@ -476,8 +481,27 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
             "test_results": test_results,
         })
 
-    # Sort per_pr: has_failures first, then flaky_but_passing, then all_green, then in_progress
+    # --- Consolidate per_pr: keep only the latest commit's entry per PR number ---
+    # If a PR has multiple commits pushed (each triggering a separate workflow run),
+    # only the entry for the most recent commit (by created_at) is kept.
+    # Entries with pr_number = None (orphaned/unresolved commits) are kept as-is.
     status_order = {"has_failures": 0, "flaky_but_passing": 1, "all_green": 2, "in_progress": 3}
+    pr_number_to_best: dict = {}     # pr_number -> per_pr entry with the latest sha_created_at
+    pr_number_to_best_ts: dict = {}  # pr_number -> cached winning created_at timestamp
+    orphaned_entries = []
+
+    for entry in per_pr:
+        pn = entry["pr_number"]
+        if pn is None:
+            orphaned_entries.append(entry)
+            continue
+        entry_ts = sha_created_at.get(entry["head_sha"], "")
+        if entry_ts > pr_number_to_best_ts.get(pn, ""):
+            pr_number_to_best[pn] = entry
+            pr_number_to_best_ts[pn] = entry_ts
+
+    # Rebuild per_pr with one entry per distinct PR number, plus orphaned entries
+    per_pr = list(pr_number_to_best.values()) + orphaned_entries
     per_pr.sort(key=lambda p: (status_order.get(p["overall_status"], 9), -(p["pr_number"] or 0)))
 
     # --- Overall aggregate ---
@@ -488,6 +512,19 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     total_instances = total_pf + total_par + total_np + total_ip
     total_resolved = total_pf + total_par + total_np
 
+    # Aggregate retry distribution: merge all per-test-class histograms
+    agg_retry_dist: dict = {}
+    for tc in per_test_class:
+        for k, v in tc.get("retry_distribution", {}).items():
+            agg_retry_dist[k] = agg_retry_dist.get(k, 0) + v
+    # Express as percentages of total passed_after_retry (only include if retries occurred)
+    agg_retry_dist_pct: dict = {}
+    if total_par > 0:
+        for k in ("1", "2", "3+"):
+            count = agg_retry_dist.get(k, 0)
+            if count > 0:
+                agg_retry_dist_pct[k] = round(count / total_par * 100, 1)
+
     aggregate = {
         "total_pr_test_instances": total_instances,
         "passed_first_attempt": total_pf,
@@ -495,6 +532,8 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         "never_passed": total_np,
         "in_progress": total_ip,
         "total_retry_attempts": total_retry_attempts,
+        "retry_distribution": agg_retry_dist,
+        "retry_distribution_pct": agg_retry_dist_pct,
         "pass_rate_any_attempt_pct": safe_pct(total_pf + total_par, total_resolved),
         "first_attempt_pass_rate_pct": safe_pct(total_pf, total_resolved),
         "retry_success_rate_pct": safe_pct(total_par, total_par + total_np),

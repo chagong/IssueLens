@@ -1,0 +1,132 @@
+name: UI Test Health Report (Personal)
+
+on:
+  schedule:
+    - cron: '0 1 * * 1-5'  # 09:00 UTC+8 (Shanghai) Mon–Fri
+  workflow_dispatch:
+    inputs:
+      enable_notification:
+        description: 'Enable notification'
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  ui-test-health-personal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Fetch UI Test Health Data
+        id: fetch
+        run: |
+          mkdir -p output
+          python .github/skills/ui-test-health/scripts/fetch_ui_test_runs.py \
+            --owner microsoft \
+            --repo copilot-intellij \
+            --days 3 \
+            --workflow-name "UI Test New" \
+            --output output/ui_test_health.json
+        env:
+          GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+
+      - name: Build Notification Payload
+        id: payload
+        run: |
+          python - <<'EOF'
+          import json, os
+
+          with open("output/ui_test_health.json") as f:
+              data = json.load(f)
+
+          meta     = data["metadata"]
+          agg      = data["aggregate"]
+          per_tc   = data["per_test_class"]
+          failures = data["prs_with_persistent_failures"]
+
+          since = meta["since"][:10]
+          until = meta["until"][:10]
+          prs   = meta["total_prs_analyzed"]
+          runs  = meta["total_workflow_runs"]
+
+          pass_any   = agg["pass_rate_any_attempt_pct"]
+          pass_first = agg["first_attempt_pass_rate_pct"]
+          retried    = agg["total_retry_attempts"]
+          retry_succ = agg["retry_success_rate_pct"]
+          never      = agg["never_passed_rate_pct"]
+          rdist      = agg.get("retry_distribution_pct", {})
+
+          retry_dist_str = "N/A"
+          if rdist:
+              parts = []
+              if "1"  in rdist: parts.append(f"1 retry: {rdist['1']}%")
+              if "2"  in rdist: parts.append(f"2 retries: {rdist['2']}%")
+              if "3+" in rdist: parts.append(f"3+ retries: {rdist['3+']}%")
+              retry_dist_str = ", ".join(parts)
+
+          msg = f"""## 📊 UI Test Health — Last 3 Days ({since} → {until})
+
+| Metric | Value |
+|---|---|
+| PRs analyzed | {prs} |
+| Workflow runs | {runs} |
+| Pass rate (any attempt) | {pass_any}% |
+| First-attempt pass rate | {pass_first}% |
+| Re-runs triggered | {retried} |
+| Retry success rate | {retry_succ}% |
+| Retry distribution | {retry_dist_str} |
+| Never-passed rate | {never}% |
+
+### 🔬 Per-Test-Class
+
+| IDE | Version | Test Class | First-Pass% | Any-Pass% | Flakiness |
+|---|---|---|---|---|---|
+"""
+          for tc in per_tc:
+              score = tc["flakiness_score"]
+              emoji = "🟢" if score < 0.15 else ("🟡" if score <= 0.35 else "🔴")
+              msg += f"| {tc['ide_type']} | {tc['ide_version']} | {tc['test_class']} | {tc['first_attempt_pass_rate_pct']}% | {tc['any_attempt_pass_rate_pct']}% | {emoji} {score} |\n"
+
+          if failures:
+              msg += f"\n### 🚨 PRs with Persistent Failures ({len(failures)} PRs)\n\n"
+              for pr in failures[:10]:  # cap at 10 to stay within Teams message limits
+                  pn = pr.get("pr_number", "?")
+                  pt = pr.get("pr_title", "")
+                  pu = pr.get("pr_url", "")
+                  pa = pr.get("pr_author", "")
+                  msg += f"- [PR #{pn}]({pu}) {pt} · @{pa}\n"
+                  for ft in pr.get("failed_tests", []):
+                      msg += f"  - ❌ `{ft['ide_type']} {ft['ide_version']} — {ft['test_class']}` ({ft['attempts']} attempt(s))\n"
+
+          run_url = (
+              os.environ.get("GITHUB_SERVER_URL", "https://github.com") + "/" +
+              os.environ.get("GITHUB_REPOSITORY", "") + "/actions/runs/" +
+              os.environ.get("GITHUB_RUN_ID", "")
+          )
+
+          payload = {
+              "title": f"UI Test Health Report — {since} to {until}",
+              "message": msg,
+              "workflowRunUrl": run_url,
+              "recipient": "nliu@microsoft.com",
+          }
+
+          compact = json.dumps(payload)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"payload={compact}\n")
+
+          print(f"Payload built — title: {payload['title']}")
+          EOF
+
+      - name: Trigger Personal Notification
+        if: ${{ github.event_name == 'schedule' || inputs.enable_notification == true }}
+        uses: ./.github/actions/notification
+        with:
+          url: ${{ secrets.PERSONAL_NOTIFICATION_URL }}
+          payload: ${{ steps.payload.outputs.payload }}

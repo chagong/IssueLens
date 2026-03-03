@@ -29,6 +29,16 @@
         "passed_after_retry":          { "type": "integer" },
         "never_passed":                { "type": "integer" },
         "in_progress":                 { "type": "integer" },
+        "retry_distribution": {
+          "type": "object",
+          "description": "Histogram of retries needed to pass, summed across all test classes. Keys: '1', '2', '3+'. Counts of instances that needed that many retries.",
+          "additionalProperties": { "type": "integer" }
+        },
+        "retry_distribution_pct": {
+          "type": "object",
+          "description": "Same as retry_distribution but as % of total passed_after_retry. Keys: '1', '2', '3+'. Only keys with count > 0 are included. Empty when passed_after_retry == 0.",
+          "additionalProperties": { "type": "number" }
+        },
         "pass_rate_any_attempt_pct":   { "type": "number",
           "description": "(passed_first + passed_after_retry) / total_resolved * 100" },
         "first_attempt_pass_rate_pct": { "type": "number",
@@ -116,6 +126,11 @@
           "ide_version":        { "type": "string" },
           "test_class":         { "type": "string" },
           "passed_after_retry": { "type": "integer" },
+          "retry_distribution": {
+            "type": "object",
+            "description": "Histogram of retries needed to pass for this test class. Keys: '1', '2', '3+'.",
+            "additionalProperties": { "type": "integer" }
+          },
           "never_passed":       { "type": "integer" },
           "total_instances":    { "type": "integer" },
           "flakiness_score":    { "type": "number" }
@@ -186,6 +201,8 @@
     "passed_after_retry": 9,
     "never_passed": 5,
     "in_progress": 2,
+    "retry_distribution": { "1": 6, "2": 2, "3+": 1 },
+    "retry_distribution_pct": { "1": 66.7, "2": 22.2, "3+": 11.1 },
     "pass_rate_any_attempt_pct": 91.9,
     "first_attempt_pass_rate_pct": 77.4,
     "retry_success_rate_pct": 64.3,
@@ -290,12 +307,14 @@
   "top_flaky_tests": [
     {
       "ide_type": "IC", "ide_version": "2025.2", "test_class": "McpTest",
-      "passed_after_retry": 2, "never_passed": 1, "total_instances": 8,
+      "passed_after_retry": 2, "retry_distribution": { "1": 1, "2": 1 },
+      "never_passed": 1, "total_instances": 8,
       "flakiness_score": 0.25
     },
     {
       "ide_type": "PY", "ide_version": "2025.1", "test_class": "CopilotChatTest",
-      "passed_after_retry": 2, "never_passed": 0, "total_instances": 8,
+      "passed_after_retry": 2, "retry_distribution": { "1": 2 },
+      "never_passed": 0, "total_instances": 8,
       "flakiness_score": 0.25
     }
   ],

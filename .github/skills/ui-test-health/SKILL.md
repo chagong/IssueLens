@@ -59,6 +59,7 @@ Always surface at the end of the report:
 | First-attempt pass rate | {first_attempt_pass_rate_pct}% |
 | Workflow re-runs triggered | {total_retry_attempts} |
 | Retry success rate | if `total_retry_attempts == 0`: `N/A — no re-runs triggered`; else: `{retry_success_rate_pct}%` |
+| Retry distribution | if `total_retry_attempts == 0`: `N/A`; else: render each key present in `retry_distribution_pct` as `1 retry: {retry_distribution_pct["1"]}%, 2 retries: {retry_distribution_pct["2"]}%, 3+ retries: {retry_distribution_pct["3+"]}%` (omit keys with 0%) |
 | Never-passed rate | {never_passed_rate_pct}% |
 
 ### 🔬 Per-Test-Class Breakdown

@@ -1,0 +1,115 @@
+"""Build a personal Teams notification payload from the ui_test_health.json report."""
+import json
+import os
+
+
+def build_retry_dist_str(rdist: dict) -> str:
+    if not rdist:
+        return "N/A"
+    parts = []
+    if "1" in rdist:
+        parts.append(f"1 retry: {rdist['1']}%")
+    if "2" in rdist:
+        parts.append(f"2 retries: {rdist['2']}%")
+    if "3+" in rdist:
+        parts.append(f"3+ retries: {rdist['3+']}%")
+    return ", ".join(parts)
+
+
+def build_message(data: dict) -> str:
+    meta     = data["metadata"]
+    agg      = data["aggregate"]
+    per_tc   = data["per_test_class"]
+    failures = data["prs_with_persistent_failures"]
+
+    since = meta["since"][:10]
+    until = meta["until"][:10]
+    prs   = meta["total_prs_analyzed"]
+    runs  = meta["total_workflow_runs"]
+
+    pass_any        = agg["pass_rate_any_attempt_pct"]
+    pass_first      = agg["first_attempt_pass_rate_pct"]
+    retried         = agg["total_retry_attempts"]
+    retry_succ      = agg["retry_success_rate_pct"]
+    never           = agg["never_passed_rate_pct"]
+    retry_dist_str  = build_retry_dist_str(agg.get("retry_distribution_pct", {}))
+
+    lines = [
+        f"## 📊 UI Test Health — Last 3 Days ({since} → {until})",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| PRs analyzed | {prs} |",
+        f"| Workflow runs | {runs} |",
+        f"| Pass rate (any attempt) | {pass_any}% |",
+        f"| First-attempt pass rate | {pass_first}% |",
+        f"| Re-runs triggered | {retried} |",
+        f"| Retry success rate | {retry_succ}% |",
+        f"| Retry distribution | {retry_dist_str} |",
+        f"| Never-passed rate | {never}% |",
+        "",
+        "### 🔬 Per-Test-Class",
+        "",
+        "| IDE | Version | Test Class | First-Pass% | Any-Pass% | Flakiness |",
+        "|---|---|---|---|---|---|",
+    ]
+
+    for tc in per_tc:
+        score = tc["flakiness_score"]
+        emoji = "🟢" if score < 0.15 else ("🟡" if score <= 0.35 else "🔴")
+        lines.append(
+            f"| {tc['ide_type']} | {tc['ide_version']} | {tc['test_class']}"
+            f" | {tc['first_attempt_pass_rate_pct']}%"
+            f" | {tc['any_attempt_pass_rate_pct']}%"
+            f" | {emoji} {score} |"
+        )
+
+    if failures:
+        lines += ["", f"### 🚨 PRs with Persistent Failures ({len(failures)} PRs)", ""]
+        for pr in failures[:10]:  # cap at 10 to stay within Teams message limits
+            pn = pr.get("pr_number", "?")
+            pt = pr.get("pr_title", "")
+            pu = pr.get("pr_url", "")
+            pa = pr.get("pr_author", "")
+            lines.append(f"- [PR #{pn}]({pu}) {pt} · @{pa}")
+            for ft in pr.get("failed_tests", []):
+                lines.append(
+                    f"  - ❌ `{ft['ide_type']} {ft['ide_version']} — {ft['test_class']}`"
+                    f" ({ft['attempts']} attempt(s))"
+                )
+
+    return "\n".join(lines)
+
+
+def main() -> None:
+    with open("output/ui_test_health.json") as f:
+        data = json.load(f)
+
+    meta  = data["metadata"]
+    since = meta["since"][:10]
+    until = meta["until"][:10]
+
+    run_url = (
+        os.environ.get("GITHUB_SERVER_URL", "https://github.com") + "/"
+        + os.environ.get("GITHUB_REPOSITORY", "") + "/actions/runs/"
+        + os.environ.get("GITHUB_RUN_ID", "")
+    )
+
+    payload = {
+        "title": f"UI Test Health Report — {since} to {until}",
+        "message": build_message(data),
+        "workflowRunUrl": run_url,
+        "recipient": "nliu@microsoft.com",
+    }
+
+    compact = json.dumps(payload)
+    github_output = os.environ.get("GITHUB_OUTPUT")
+    if github_output:
+        with open(github_output, "a") as out:
+            out.write(f"payload={compact}\n")
+
+    print(f"Payload built — title: {payload['title']}")
+
+
+if __name__ == "__main__":
+    main()

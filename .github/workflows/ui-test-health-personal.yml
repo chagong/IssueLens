@@ -55,18 +55,15 @@ jobs:
           worst=$(cat output/worst_test.json)
           test_name=$(echo "$worst" | jq -r '"\(.ide_type) \(.ide_version) — \(.test_class).\(.test_case)"')
           run_url=$(echo "$worst" | jq -r '.latest_run_url')
+          failure_message=$(echo "$worst" | jq -r '.failure_message // "unknown"')
 
-          prompt="Analyze why the UI test '${test_name}' is flaky or failing.
+          prompt="The UI test '${test_name}' is flaky or failing.
           Latest run: ${run_url}
 
-          To find the real failure reason, follow these steps:
-          1. On the GitHub Actions run page (${run_url}), go to the 'Artifacts' section at the bottom.
-          2. Find the artifact named 'ui-test-error-reports_*' (matching the IDE type/version/test class for this test). Download it.
-          3. Unzip the artifact. Open the file at 'ui-tests-new/build/reports/tests/test/index.html' — this is the Gradle HTML test report with the actual exception/assertion failure.
+          The failure message extracted from the CI log is:
+          ${failure_message}
 
-          Note: There are no JUnit XML downloadable artifacts for this workflow — the failure details are only in the HTML report inside the 'ui-test-error-reports_*' artifact.
-
-          Respond with exactly one plain-text sentence (no URLs, no markdown links) summarizing the root cause pattern and which PRs it affects. Example: 'Most failures assert Expected conflict hint but got Claude Haiku 4.5 response, affecting PR #8491 and #8493.'"
+          In exactly one plain-text sentence (no URLs, no markdown links), what is the most likely root cause in the product code or test setup? Example: 'The test asserts a specific conflict hint format but the model response includes unexpected content from Claude Haiku 4.5.'"
 
           echo "Analyzing root cause for: ${test_name}"
 

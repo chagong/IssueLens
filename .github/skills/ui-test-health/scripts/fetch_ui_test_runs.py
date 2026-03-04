@@ -169,6 +169,113 @@ def fetch_artifacts_for_run(owner: str, repo: str, run_id: int, token: str) -> l
         return []
 
 
+def fetch_job_log(owner: str, repo: str, job_id: int, token: str, max_bytes: int = 512_000) -> str:
+    """Fetch the plain-text log for a single job (follows GitHub's redirect to S3).
+
+    Logs can be large — read at most max_bytes (default 512 KB) to avoid
+    memory issues.  Returns empty string on any error.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read(max_bytes)
+        return raw.decode("utf-8", errors="replace")
+    except Exception as exc:
+        print(f"  Warning: could not fetch log for job {job_id}: {exc}", file=sys.stderr)
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Log-based failure parsing (Gradle test output in GitHub Actions logs)
+# ---------------------------------------------------------------------------
+
+# "2026-03-03T07:28:11.5097091Z CopilotChatTest > test foo() FAILED"
+_GRADLE_FAILED_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+"
+    r"(\w+)\s*>\s*(.+?)\(\)\s+FAILED\s*$",
+    re.MULTILINE,
+)
+# Strips the timestamp prefix from any log line
+_LOG_LINE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s?(.*)")
+# Strips ANSI color / reset codes (both "\x1b[35m" and bare "[35m" variants seen in logs)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\[[\d;]*m")
+
+
+def _strip_log_line(line: str) -> str:
+    """Remove timestamp prefix and ANSI codes from a raw log line."""
+    m = _LOG_LINE_RE.match(line)
+    content = m.group(1) if m else line
+    return _ANSI_RE.sub("", content)
+
+
+def parse_failures_from_log(log_text: str) -> dict:
+    """Parse Gradle test failure output from a GitHub Actions job log.
+
+    Returns {test_case_name: failure_message} for each FAILED test found.
+    failure_message is the assertion/exception text with stack frames removed.
+    """
+    if not log_text:
+        return {}
+
+    lines = log_text.splitlines()
+    results: dict = {}
+
+    # Collect (line_index, test_class, test_case) for every FAILED marker
+    failed_positions = []
+    for i, line in enumerate(lines):
+        m = _GRADLE_FAILED_RE.match(line)
+        if m:
+            failed_positions.append((i, m.group(2).strip()))
+
+    for pos, test_case in failed_positions:
+        error_lines = []
+        for j in range(pos + 1, min(pos + 30, len(lines))):
+            content = _strip_log_line(lines[j]).rstrip()
+            if not content:
+                continue
+            stripped = content.lstrip()
+            # Stop collecting at stack frame lines
+            if stripped.startswith("at ") or stripped.startswith("\tat "):
+                break
+            # "Caused by:" is a duplicate of the same message — stop
+            if stripped.startswith("Caused by:"):
+                break
+            # Skip dashed separator lines e.g. "----Driver Error----"
+            if re.match(r"^[-=]{4,}", stripped):
+                continue
+            # Skip screenshot / driver-doc reference lines
+            if stripped.startswith("Screenshot:") or stripped.startswith("Driver documentation:"):
+                continue
+            # For "SomeException: message" lines, keep only the message part
+            exc_match = re.match(r"^[\w.$]+(Exception|Error):\s*(.*)", stripped)
+            if exc_match:
+                after = exc_match.group(2).strip()
+                if after:
+                    error_lines.append(after)
+                continue
+            # Skip bare exception/error class names with no message
+            if re.match(r"^[\w.$]+(Exception|Error)\s*$", stripped):
+                continue
+            error_lines.append(stripped)
+
+        if error_lines:
+            msg = " ".join(error_lines)
+            msg = re.sub(r"\s+", " ", msg).strip()
+            if len(msg) > 300:
+                msg = msg[:300] + "…"
+            results[test_case] = msg
+
+    return results
+
+
 def _extract_failure_message(elem) -> str:
     """Extract a concise failure message from a <failure> or <error> XML element.
 
@@ -407,6 +514,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     tc_groups: dict = defaultdict(list)
     # Cache artifact results per (run_id, attempt) to avoid redundant downloads
     artifact_cache: dict = {}  # (run_id, attempt) -> list of {test_class, test_case, passed}
+    log_failure_cache: dict = {}  # job_id -> {test_case_name: failure_message} from job log
     sha_pr_map: dict = {}      # head_sha -> pr_info
     sha_created_at: dict = {}  # head_sha -> most recent created_at (ISO string)
 
@@ -449,6 +557,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                 if key_tuple is None:
                     continue
                 ide_type, ide_version, test_class = key_tuple
+                job_id = job.get("id")
                 job_conclusion = job.get("conclusion") or (conclusion if att == attempt else "failure")
                 group_key = (sha, ide_type, ide_version, test_class)
                 groups[group_key].append({
@@ -489,8 +598,24 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                             "failure_message": case.get("failure_message", "") if not case["passed"] else "",
                         })
                 else:
-                    # No artifact / no matching cases — fall back: synthesize a single
-                    # test case named after the class using the job-level conclusion
+                    # No JUnit XML artifact — fall back to job log parsing for failures,
+                    # or synthesize a single test case entry from the job-level conclusion.
+                    if job_conclusion == "failure" and job_id:
+                        if job_id not in log_failure_cache:
+                            log_text = fetch_job_log(owner, repo, job_id, token)
+                            log_failure_cache[job_id] = parse_failures_from_log(log_text)
+                        log_failures = log_failure_cache[job_id]  # {test_case: failure_message}
+                        if log_failures:
+                            for tc_name, fail_msg in log_failures.items():
+                                tc_key = (sha, ide_type, ide_version, test_class, tc_name)
+                                tc_groups[tc_key].append({
+                                    "run_attempt": att,
+                                    "conclusion": "failure",
+                                    "run_url": run_url,
+                                    "failure_message": fail_msg,
+                                })
+                            continue  # tc_groups already populated from log; skip class-level fallback
+                    # Final fallback: synthesize a single test case named after the class
                     tc_key = (sha, ide_type, ide_version, test_class, test_class)
                     tc_groups[tc_key].append({
                         "run_attempt": att,

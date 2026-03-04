@@ -1,0 +1,82 @@
+name: VSCode Weekly Release Notes
+
+on:
+  schedule:
+    - cron: '0 0 * * 5'  # Runs every Friday at 08:00 Shanghai Time (UTC+8)
+  workflow_dispatch:
+    inputs:
+      since_date:
+        description: 'Fetch PRs closed since this date (YYYY-MM-DD, defaults to 7 days ago)'
+        type: string
+        required: false
+        default: ''
+
+jobs:
+  vscode-release-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Generate and Send Release Notes
+        id: release-notes
+        run: |
+          # Calculate the start of the week (7 days ago) unless overridden
+          if [ -n "${{ inputs.since_date }}" ]; then
+            since_date="${{ inputs.since_date }}"
+          else
+            since_date=$(date -u -d "7 days ago" +'%Y-%m-%d')
+          fi
+          until_date=$(date -u +'%Y-%m-%d')
+
+          prompt="Fetch all the PRs that were closed between ${since_date} and ${until_date} for repo: microsoft/vscode, generate a release notes report and send the report to the email addresses in the RECIPIENT_PM environment variable.
+
+          Instructions:
+          - Only list user-facing PRs in the notes (features, critical bug fixes, UX changes, performance improvements, etc.).
+          - Exclude PRs that are purely engineering or build changes, such as: version bumps, distro updates, npm/dependency upgrades, webpack/esbuild ports, chore commits, compile fixes, test-only changes, revert commits, internal refactors with no user impact.
+          - Group the list by date (most recent first).
+          - Format each entry as: '- <title> #<number>' with a link to the PR.
+          - Send the formatted release notes as an HTML email using the 'send-email' skill.
+            - Subject: 'microsoft/vscode — Weekly Release Notes (${since_date} to ${until_date})'
+            - Recipients: read from the RECIPIENT_PM environment variable (comma-separated list of email addresses).
+
+          Example output format:
+          ## March 3, 2026
+          - Add scrollbar to chat input #298875
+          - Allow hiding chat input toolbar items via right-click context menu #299077
+
+          ## March 2, 2026
+          - Chat: Add support for hand-off prompts in chat sessions #298818
+          - Add Cmd+W keybinding for new chat session in session management #298807
+
+          Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          echo "Running with prompt for PRs closed between ${since_date} and ${until_date}"
+          output=$(copilot --allow-all --no-custom-instructions --no-ask-user --prompt "$prompt" 2>&1 || true)
+
+          echo "Raw output:"
+          echo "$output"
+
+          # Save output to file for artifact
+          echo "$output" > release-notes-output.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          RECIPIENT_PM: ${{ secrets.RECIPIENT_PM }}
+          MAILING_URL: ${{ secrets.MAILING_URL }}
+
+      - name: Upload output artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-output
+          path: release-notes-output.txt
+          retention-days: 30

@@ -63,11 +63,10 @@ jobs:
           1. On the GitHub Actions run page (${run_url}), go to the 'Artifacts' section at the bottom.
           2. Find the artifact named 'ui-test-error-reports_*' (matching the IDE type/version/test class for this test). Download it.
           3. Unzip the artifact. Open the file at 'ui-tests-new/build/reports/tests/test/index.html' — this is the Gradle HTML test report with the actual exception/assertion failure.
-          4. Also check the job logs for any setup or environment errors (display server, plugin loading, etc.).
 
           Note: There are no JUnit XML downloadable artifacts for this workflow — the failure details are only in the HTML report inside the 'ui-test-error-reports_*' artifact.
 
-          Based on the failure details you find, identify the root cause pattern and suggest a fix."
+          Respond with exactly one plain-text sentence (no URLs, no markdown links) summarizing the root cause pattern and which PRs it affects. Example: 'Most failures assert Expected conflict hint but got Claude Haiku 4.5 response, affecting PR #8491 and #8493.'"
 
           echo "Analyzing root cause for: ${test_name}"
 

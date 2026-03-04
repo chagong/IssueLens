@@ -144,21 +144,38 @@ def build_message(data: dict) -> str:
     lines = [
         f"## 📊 UI Test Health — Last 3 Days ({since} → {until})",
         "",
-        f"**PRs analyzed:** {prs} &nbsp;|&nbsp; **Runs:** {runs} &nbsp;|&nbsp; **Pass (any):** {pass_any}% &nbsp;|&nbsp; **First-attempt:** {pass_first}%",
-        f"**Re-runs:** {retried} &nbsp;|&nbsp; **Retry success:** {retry_succ}% &nbsp;|&nbsp; **Never-passed:** {never}%",
+        "| Key | Value |",
+        "|---|---|",
+        f"| PRs analyzed | {prs} |",
+        f"| Workflow runs | {runs} |",
+        f"| Pass rate (any attempt) | {pass_any}% |",
+        f"| Pass rate (first attempt) | {pass_first}% |",
+        f"| Re-runs | {retried} |",
+        f"| Retry success rate | {retry_succ}% |",
+        f"| Never-passed rate | {never}% |",
         "",
     ]
 
-    # Worst flaky test case callout
+    # Worst flaky test case callout — include raw failure message from log
     if worst:
         score = worst["flakiness_score"]
         run_url = worst.get("latest_run_url", "")
         label = f"{worst['ide_type']} {worst['ide_version']} — {worst['test_class']}.{worst['test_case']}"
         run_link = f" — [latest run]({run_url})" if run_url else ""
         lines += [
-            f"⚠️ **Worst:** `{label}` &nbsp;|&nbsp; flakiness: **{score}** &nbsp;|&nbsp; never-passed: **{worst['never_passed']}×**{run_link}",
+            f"⚠️ Worst: `{label}` | flakiness: {score} | never-passed: {worst['never_passed']}×{run_link}",
             "",
         ]
+        worst_msg = worst.get("failure_message", "").strip()
+        if worst_msg:
+            if len(worst_msg) > 400:
+                worst_msg = worst_msg[:400] + "…"
+            lines += [
+                "### 🔍 Worst Test Failure",
+                "",
+                f"```\n{worst_msg}\n```",
+                "",
+            ]
 
     # Per-test-case table, grouped by (ide_type, ide_version, test_class)
     if per_tc:
@@ -187,39 +204,26 @@ def build_message(data: dict) -> str:
     # Data-driven failure summary
     lines += build_failure_summary(data)
 
-    # Root cause analysis from Copilot CLI (injected via env var by workflow)
-    root_cause = os.environ.get("ROOT_CAUSE_ANALYSIS", "").strip()
-    if root_cause:
-        lines += [
-            "",
-            "### 🤖 Root Cause (Copilot)",
-            "",
-            root_cause,
-        ]
-
-    # Unstable test cases: show success rate + trimmed failure message
-    unstable = [
+    # Raw failure messages per test case (from CI log parsing)
+    failing_with_msg = [
         tc for tc in per_tc
-        if tc["first_attempt_pass_rate_pct"] < 100 and tc["total_instances"] >= 2
+        if (tc.get("never_passed", 0) > 0 or tc.get("flakiness_score", 0.0) > 0)
+        and tc.get("failure_message", "").strip()
     ]
-    unstable.sort(key=lambda x: (x["first_attempt_pass_rate_pct"], -x["total_instances"]))
-    if unstable:
-        lines += ["", "### ⚠️ Unstable Test Cases", ""]
-        for tc in unstable[:5]:
+    failing_with_msg.sort(key=lambda x: (-x.get("never_passed", 0), -x.get("flakiness_score", 0)))
+    if failing_with_msg:
+        lines += ["", "### 💥 Failure Messages", ""]
+        for tc in failing_with_msg:
             label = f"{tc['ide_type']} {tc['ide_version']} — {tc['test_class']}.{tc['test_case']}"
             run_link = f" · [run]({tc['latest_run_url']})" if tc.get("latest_run_url") else ""
-            lines.append(
-                f"**{label}**{run_link}  "
-                f"Success: **{tc['first_attempt_pass_rate_pct']}%** "
-                f"({tc['passed_first_attempt']}/{tc['total_instances']} runs) · "
-                f"Any-attempt: {tc['any_attempt_pass_rate_pct']}%"
-            )
-            msg = tc.get("failure_message", "").strip()
-            if msg:
-                if len(msg) > 300:
-                    msg = msg[:300] + "…"
-                lines.append(f"> 💥 `{msg}`")
-            lines.append("")
+            msg = tc["failure_message"].strip()
+            if len(msg) > 400:
+                msg = msg[:400] + "…"
+            lines += [
+                f"`{label}`{run_link}",
+                f"```\n{msg}\n```",
+                "",
+            ]
 
     return "\n".join(lines)
 

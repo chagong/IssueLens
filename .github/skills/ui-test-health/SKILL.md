@@ -50,17 +50,33 @@ Always surface at the end of the report:
 
 ### 📊 UI Test Health — {timeFrame}
 
-| Metric | Value |
+| Key | Value |
 |---|---|
-| Time frame | {since} → {until} |
 | PRs analyzed | {total_prs_analyzed} |
-| Workflow runs fetched | {total_workflow_runs} |
-| Overall pass rate (any attempt) | {pass_rate_any_attempt_pct}% |
-| First-attempt pass rate | {first_attempt_pass_rate_pct}% |
-| Workflow re-runs triggered | {total_retry_attempts} |
-| Retry success rate | if `total_retry_attempts == 0`: `N/A — no re-runs triggered`; else: `{retry_success_rate_pct}%` |
-| Retry distribution | if `total_retry_attempts == 0`: `N/A`; else: render each key present in `retry_distribution_pct` as `1 retry: {retry_distribution_pct["1"]}%, 2 retries: {retry_distribution_pct["2"]}%, 3+ retries: {retry_distribution_pct["3+"]}%` (omit keys with 0%) |
+| Workflow runs | {total_workflow_runs} |
+| Pass rate (any attempt) | {pass_rate_any_attempt_pct}% |
+| Pass rate (first attempt) | {first_attempt_pass_rate_pct}% |
+| Re-runs | {total_retry_attempts} |
+| Retry success rate | if `total_retry_attempts == 0`: `N/A`; else: `{retry_success_rate_pct}%` |
 | Never-passed rate | {never_passed_rate_pct}% |
+
+### ⚠️ Worst Flaky Test
+
+_Only shown if `worst_flaky_test_case` is non-null._
+
+```
+⚠️ Worst: `{ide_type} {ide_version} — {test_class}.{test_case}` | flakiness: {flakiness_score} | never-passed: {never_passed}× — [latest run]({latest_run_url})
+```
+
+If `failure_message` is non-empty, immediately follow with a fenced code block:
+
+````
+### 🔍 Worst Test Failure
+
+```
+{failure_message}
+```
+````
 
 ### 🔬 Per-Test-Case Breakdown
 
@@ -68,30 +84,47 @@ Always surface at the end of the report:
 |---|---|---|---|---|---|---|
 | {ide_type} | {ide_version} | {test_class} | {test_case} | {first_attempt_pass_rate_pct}% | {any_attempt_pass_rate_pct}% | {flakiness_emoji} {flakiness_score} |
 
-Rows are sorted by worst flakiness first within each class. Data comes from JUnit XML artifacts uploaded per run; falls back to job-level conclusion if no artifact is found.
+Rows are sorted by worst flakiness first within each class. Failure messages are extracted from CI job logs using the Gradle `TestClass > testCase() FAILED` pattern; falls back to job-level conclusion if no log data is found.
 
 Flakiness emoji: 🟢 < 0.15 (stable) · 🟡 0.15–0.35 (moderate) · 🔴 > 0.35 (high)
 
-### 🔁 Top Flaky Tests
+### 🔍 Failure Summary
 
-_Only shown if `top_flaky_tests` is non-empty._
+_Only shown if any `per_test_case` entry has a non-empty `failure_message`._
 
-For each entry, show the retry breakdown from `retry_distribution`:
-- `{ide_type} {ide_version} — {test_class}`: flakiness score **{flakiness_score}**, never passed **{never_passed}×**
-  - Retry breakdown: 1 retry: {retry_distribution["1"]}×, 2 retries: {retry_distribution["2"]}×, 3+ retries: {retry_distribution["3+"]}×
+Groups failures by category (first match wins):
+- **🔎 Element Not Found** — message contains: `waitForException`, `elementNotFound`, `element not found`, `NoSuchElementException`, `unable to find element`
+- **❌ Assertion Failures** — message contains: `AssertionError`, `expected:`, `but was:`, `AssertionFailedError`, or starts with `assert`
+- **⏱️ Timeouts** — message contains: `timeout`, `timed out`, `timedOut`
+- **⚙️ Other Failures** — everything else
+
+For each category: lists up to 3 distinct (deduplicated) failure messages with the affected test case name(s) and PR count.
+
+Ends with a `**PRs with persistent failures:**` link list (up to 5 PRs, newest first).
+
+### 💥 Failure Messages
+
+_Only shown if any failing test case has a non-empty `failure_message`._
+
+For each failing test case (sorted by `never_passed` desc, then `flakiness_score` desc), show:
+
+```
+`{ide_type} {ide_version} — {test_class}.{test_case}` · [run]({latest_run_url})
+```
+{failure_message} (in a fenced code block, truncated to 400 chars)
 
 ### 🚨 PRs with Persistent Failures
 
 _Only shown if `prs_with_persistent_failures` is non-empty._
 
 For each PR:
-> **PR #{pr_number}** [{pr_title}]({pr_url}) · @{pr_author}
+> PR #{pr_number} [{pr_title}]({pr_url}) · @{pr_author}
 > - ❌ `{ide_type} {ide_version} — {test_class}` failed on all {attempts} attempt(s) → [run]({latest_run_url})
 
 ### 📈 Health Assessment
 
 Write a 3–5 sentence narrative covering:
-- Overall health verdict: **Healthy** (pass rate ≥ 90%, never-passed rate < 5%) / **Marginal** / **Unhealthy**
+- Overall health verdict: Healthy (pass rate ≥ 90%, never-passed rate < 5%) / Marginal / Unhealthy
 - Which test class or IDE combo shows the most problems
 - Whether failures look infrastructure-related (broad failures across many PRs) vs code-related (failures isolated to specific PRs/test classes)
 - Recommended next action (if any)

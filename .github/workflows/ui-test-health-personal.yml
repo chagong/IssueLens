@@ -23,14 +23,6 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install GitHub Copilot CLI
-        run: npm install -g @github/copilot
-
       - name: Fetch UI Test Health Data
         id: fetch
         run: |
@@ -48,46 +40,9 @@ jobs:
         id: worst
         run: python .github/skills/ui-test-health/scripts/extract_worst_test.py
 
-      - name: Analyze Root Cause with Copilot CLI
-        id: root_cause
-        if: ${{ steps.worst.outputs.has_flaky_tests == 'true' }}
-        run: |
-          worst=$(cat output/worst_test.json)
-          test_name=$(echo "$worst" | jq -r '"\(.ide_type) \(.ide_version) — \(.test_class).\(.test_case)"')
-          run_url=$(echo "$worst" | jq -r '.latest_run_url')
-          failure_message=$(echo "$worst" | jq -r '.failure_message // "unknown"')
-
-          prompt="The UI test '${test_name}' is flaky or failing.
-          Latest run: ${run_url}
-
-          The failure message extracted from the CI log is:
-          ${failure_message}
-
-          In exactly one plain-text sentence (no URLs, no markdown links), what is the most likely root cause in the product code or test setup? Example: 'The test asserts a specific conflict hint format but the model response includes unexpected content from Claude Haiku 4.5.'"
-
-          echo "Analyzing root cause for: ${test_name}"
-
-          # Write output directly to file to avoid shell variable multiline truncation
-          copilot --agent=issuelens --prompt "$prompt" > output/root_cause_analysis.txt 2>&1 || true
-
-          echo "--- Root cause analysis output ---"
-          cat output/root_cause_analysis.txt
-
-          # Use unique delimiter to safely write multiline content to GITHUB_OUTPUT
-          {
-            echo "root_cause_analysis<<__ANALYSIS_EOF__"
-            cat output/root_cause_analysis.txt
-            echo "__ANALYSIS_EOF__"
-          } >> "$GITHUB_OUTPUT"
-        env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.NLIU_PAT_COPILOT_JETBRAINS }}
-          GH_TOKEN: ${{ secrets.NLIU_PAT_COPILOT_JETBRAINS }}
-
       - name: Build Notification Payload
         id: payload
         run: python .github/skills/ui-test-health/scripts/build_notification_payload.py
-        env:
-          ROOT_CAUSE_ANALYSIS: ${{ steps.root_cause.outputs.root_cause_analysis }}
 
       - name: Trigger Personal Notification
         if: ${{ github.event_name == 'schedule' || inputs.enable_notification == true }}

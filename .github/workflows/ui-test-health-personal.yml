@@ -1,0 +1,48 @@
+name: UI Test Health Report (Personal)
+
+on:
+  schedule:
+    - cron: '0 1 * * 1-5'  # 09:00 UTC+8 (Shanghai) Mon–Fri
+  workflow_dispatch:
+    inputs:
+      enable_notification:
+        description: 'Enable notification'
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  ui-test-health-personal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Fetch UI Test Health Data
+        id: fetch
+        run: |
+          mkdir -p output
+          python .github/skills/ui-test-health/scripts/fetch_ui_test_runs.py \
+            --owner microsoft \
+            --repo copilot-intellij \
+            --days 3 \
+            --workflow-name "UI Test New" \
+            --output output/ui_test_health.json
+        env:
+          GITHUB_PAT: ${{ secrets.NLIU_PAT_COPILOT_JETBRAINS }}
+
+      - name: Build Notification Payload
+        id: payload
+        run: python .github/skills/ui-test-health/scripts/build_notification_payload.py
+
+      - name: Trigger Personal Notification
+        if: ${{ github.event_name == 'schedule' || inputs.enable_notification == true }}
+        uses: ./.github/actions/notification
+        with:
+          url: ${{ secrets.PERSONAL_NOTIFICATION_URL }}
+          payload: ${{ steps.payload.outputs.payload }}

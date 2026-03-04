@@ -15,6 +15,7 @@ Skills are modular capabilities that can be used by agents or invoked directly:
 - **check-sla** - Check SLA compliance status for GitHub issues
 - **assign-issue** - Assign issues to the right person based on area ownership
 - **find-critical-issues** - Triage issues and identify critical ones (hot/blocking/regression)
+- **ui-test-health** - Analyze UI test pass rates, flakiness patterns, and persistent failures for the `UI Test New` CI workflow in `microsoft/copilot-intellij`
 - **send-email** - Send HTML email notifications via Azure Logic App
 - **send-notification** - Send adaptive card notifications to Teams
 - **send-personal-notification** - Send personal workflow bot messages to Teams

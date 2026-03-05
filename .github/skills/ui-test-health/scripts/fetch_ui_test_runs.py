@@ -69,7 +69,8 @@ def github_get(url: str, token: str, params: dict | None = None) -> dict | list:
                 token_len = len(token) if token else 0
                 print(f"Token length: {token_len}", file=sys.stderr)
             if exc.code == 429 or exc.code == 403:
-                wait = 60 * (attempt + 1)
+                retry_after = exc.headers.get("Retry-After")
+                wait = int(retry_after) if retry_after and retry_after.isdigit() else 60 * (attempt + 1)
                 print(f"Rate limited (HTTP {exc.code}), waiting {wait}s...", file=sys.stderr)
                 time.sleep(wait)
                 continue
@@ -215,6 +216,9 @@ def fetch_job_log(owner: str, repo: str, job_id: int, token: str) -> str | None:
 
 _FAILED_LINE_RE = re.compile(r"(\w[\w$]*)\s*>\s*(.+?)\(\)\s+FAILED", re.MULTILINE)
 _EXCEPTION_LINE_RE = re.compile(r"^\s+([\w$][\w$.]*(?:Error|Exception|Failure))\b(.*)", re.MULTILINE)
+# GitHub Actions prepends a timestamp to every log line: "2026-03-05T05:46:43.000Z "
+# Strip these before applying regexes so that "^\s+" can match correctly.
+_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z ", re.MULTILINE)
 
 
 def extract_all_failure_reasons(log_text: str, test_class: str) -> list[dict]:
@@ -230,6 +234,7 @@ def extract_all_failure_reasons(log_text: str, test_class: str) -> list[dict]:
     """
     if not log_text:
         return []
+    log_text = _TIMESTAMP_RE.sub("", log_text)
     results = []
     matches = list(_FAILED_LINE_RE.finditer(log_text))
     for i, m in enumerate(matches):
@@ -256,43 +261,76 @@ def extract_all_failure_reasons(log_text: str, test_class: str) -> list[dict]:
     return results
 
 
-def fetch_annotations(owner: str, repo: str, job_id: int, token: str) -> list[dict]:
-    """Fetch check-run annotations for a job via the GitHub Checks API.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\?(\[[\d;]*[A-Za-z])")
 
-    job_id == check_run_id for GitHub Actions jobs.
-    Returns a list of annotation dicts, or [] if unavailable.
+
+def fetch_annotations(owner: str, repo: str, sha: str, ide_type: str, ide_version: str,
+                      test_class: str, token: str) -> list[dict]:
+    """Fetch check-run annotations from the 'ui test report' check run for this combo.
+
+    The test framework publishes a separate check run named
+    'ui test report ({ide_type}, {ide_version}, {test_class})' which carries
+    per-test failure annotations. This is distinct from the job check run,
+    which only has a generic exit-code annotation.
+    Returns a list of annotation dicts, or [] if the check run is not found.
     """
-    url = f"https://api.github.com/repos/{owner}/{repo}/check-runs/{job_id}/annotations"
+    target_name = f"ui test report ({ide_type}, {ide_version}, {test_class})"
+    url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}/check-runs"
     try:
-        return github_get_all_pages(url, token)
+        check_runs = github_get_all_pages(url, token, params={"per_page": 100})
     except Exception as exc:
-        print(f"  Warning: could not fetch annotations for job {job_id}: {exc}", file=sys.stderr)
+        print(f"  Warning: could not list check-runs for {sha[:8]}: {exc}", file=sys.stderr)
+        return []
+    cr = next((c for c in check_runs if c.get("name") == target_name), None)
+    if not cr:
+        return []
+    ann_url = f"https://api.github.com/repos/{owner}/{repo}/check-runs/{cr['id']}/annotations"
+    try:
+        return github_get_all_pages(ann_url, token)
+    except Exception as exc:
+        print(f"  Warning: could not fetch annotations for {target_name}: {exc}", file=sys.stderr)
         return []
 
 
 def parse_annotations(annotations: list[dict]) -> list[dict]:
-    """Convert check-run annotations into the same shape as extract_all_failure_reasons.
+    """Convert 'ui test report' check-run annotations into the same shape as
+    extract_all_failure_reasons.
 
-    Each annotation with annotation_level 'failure' maps to one result dict:
-        test_case        – annotation title (test method name)
-        exception_type   – first word of message if it looks like an exception class, else None
-        exception_message – remainder of message after the exception type (or full message)
+    Each failure annotation has:
+      title   – "ClassName.test method name()" → used as test_case
+      message – error text with ANSI escape codes, first non-empty class name is exception_type
     """
     results = []
     for ann in annotations:
         if ann.get("annotation_level") != "failure":
             continue
-        title = (ann.get("title") or "").strip()
-        message = (ann.get("message") or "").strip()
-        # Try to split "ExceptionType: message text" from the first line
-        first_line = message.splitlines()[0] if message else ""
-        exc_match = re.match(r"([\w$][\w$.]*(?:Error|Exception|Failure))[:\s](.*)", first_line)
-        if exc_match:
-            exc_type = exc_match.group(1)
-            exc_msg  = exc_match.group(2).strip(" :\t") or message
-        else:
-            exc_type = None
-            exc_msg  = message or None
+        # Strip trailing "()" from title to get the plain test case name
+        title = re.sub(r"\(\)$", "", (ann.get("title") or "").strip())
+        # Strip class prefix "ClassName." if present
+        title = re.sub(r"^\w+\.", "", title)
+        message = _ANSI_RE.sub("", ann.get("message") or "")
+        # Find first line that looks like an exception class name
+        exc_type = None
+        exc_msg  = None
+        lines = [l.strip() for l in message.splitlines() if l.strip()]
+        _skip = re.compile(r"^-{3,}|^\s*at |^Caused by|^Screenshot|^Driver doc")
+        exc_lines = [(j, l) for j, l in enumerate(lines)
+                     if re.match(r"[\w$][\w$.]*(?:Error|Exception|Failure)\b", l)
+                     and not _skip.match(l)]
+        if exc_lines:
+            # Prefer AssertionFailed* as root cause; otherwise take the first match
+            preferred = next((x for x in exc_lines if "AssertionFailed" in x[1]), exc_lines[0])
+            j, line = preferred
+            m = re.match(r"([\w$][\w$.]*(?:Error|Exception|Failure))[::\s]?(.*)", line)
+            exc_type = m.group(1).split(".")[-1]
+            candidate = m.group(2).strip(" :\t")
+            if not candidate:
+                # Look for nearest non-decoration line before this one
+                for k in range(j - 1, -1, -1):
+                    if not _skip.match(lines[k]) and not re.match(r"[\w$][\w$.]*(?:Error|Exception|Failure)\b", lines[k]):
+                        candidate = lines[k]
+                        break
+            exc_msg = candidate or None
         results.append({
             "test_case":         title,
             "exception_type":    exc_type,
@@ -523,40 +561,63 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     #   None  = log could not be fetched
     #   []    = log fetched but no matching FAILED block found
     #   [...] = one dict per FAILED block: {test_case, exception_type, exception_message}
-    # combo_counts / combo_cases are built in the same pass to avoid a second
-    # iteration over classified.
-    print("Fetching failure logs for never_passed jobs...", file=sys.stderr)
+    # Pass 1 — count never_passed per combo (no API calls).
+    # Pass 2 — fetch annotations only for the worst combo (capped) + per-PR entries (capped).
+    _MAX_SUMMARY_SAMPLES = 5   # annotation fetches for failure_summary dominant-exception detection
+    _MAX_PR_SAMPLES      = 3   # annotation fetches per (pr, test_class) entry for failed_cases
+
+    print("Counting never-passed jobs per combo...", file=sys.stderr)
     failure_cases: dict = {}
     combo_counts: dict = defaultdict(int)   # tk -> never_passed group count
     combo_cases: dict = defaultdict(list)   # tk -> flat list of all failure case dicts
+    never_passed_groups: list = []          # [(group_key, failed_entry)] for pass 2
+    _in_progress = (None, "in_progress", "queued", "waiting")
     for group_key, entries in groups.items():
         if classified[group_key]["status"] != "never_passed":
             continue
         sha, ide_type, ide_version, test_class = group_key
         tk = (ide_type, ide_version, test_class)
         combo_counts[tk] += 1
-        # Use the latest attempt with a conclusive failure (exclude None / in-progress).
-        _in_progress = (None, "in_progress", "queued", "waiting")
         failed_entry = next(
             (e for e in reversed(entries)
              if e.get("conclusion") not in ("success",) + _in_progress and e.get("job_id")),
             None,
         )
-        if not failed_entry:
+        never_passed_groups.append((group_key, failed_entry))
+
+    # Identify worst combo upfront so we can prioritise its jobs in pass 2.
+    worst_tk = max(combo_counts, key=lambda k: combo_counts[k]) if combo_counts else None
+
+    print("Fetching failure annotations for never_passed jobs...", file=sys.stderr)
+    summary_samples: dict = defaultdict(int)   # tk -> fetches done for summary
+    pr_samples: dict = defaultdict(int)        # (sha, tk) -> fetches done for this PR entry
+    for group_key, failed_entry in never_passed_groups:
+        sha, ide_type, ide_version, test_class = group_key
+        tk = (ide_type, ide_version, test_class)
+        pr_key = (sha, tk)
+
+        # Decide whether to fetch for summary and/or per-PR failed_cases.
+        want_summary = (tk == worst_tk and summary_samples[tk] < _MAX_SUMMARY_SAMPLES)
+        want_pr      = (pr_samples[pr_key] < _MAX_PR_SAMPLES)
+
+        if not failed_entry or (not want_summary and not want_pr):
             failure_cases[group_key] = None
-        else:
-            job_id = failed_entry["job_id"]
-            annotations = fetch_annotations(owner, repo, job_id, token)
-            parsed = parse_annotations(annotations)
-            if parsed:
-                failure_cases[group_key] = parsed
-            else:
-                # Fall back to raw log regex when annotations are empty
-                log_text = fetch_job_log(owner, repo, job_id, token)
-                failure_cases[group_key] = (
-                    extract_all_failure_reasons(log_text, test_class) if log_text is not None else None
-                )
-        combo_cases[tk].extend(failure_cases.get(group_key) or [])
+            continue
+
+        job_id = failed_entry["job_id"]
+        annotations = fetch_annotations(owner, repo, sha, ide_type, ide_version, test_class, token)
+        parsed = parse_annotations(annotations)
+        if not parsed:
+            # Fall back to raw log regex when test-report check run is absent
+            log_text = fetch_job_log(owner, repo, job_id, token)
+            parsed = extract_all_failure_reasons(log_text, test_class) if log_text is not None else None
+
+        failure_cases[group_key] = parsed
+        if want_summary:
+            combo_cases[tk].extend(parsed or [])
+            summary_samples[tk] += 1
+        if want_pr:
+            pr_samples[pr_key] += 1
 
     # --- Aggregate per test class ---
     # retry_counts[(ide_type, ide_version, test_class)][N] = count of instances that needed N retries to pass

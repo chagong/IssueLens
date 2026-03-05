@@ -34,7 +34,7 @@ jobs:
             --workflow-name "UI Test New" \
             --output output/ui_test_health.json
         env:
-          GITHUB_PAT: ${{ secrets.NLIU_PAT_COPILOT_JETBRAINS }}
+          GITHUB_PAT: ${{ secrets.NLIU_GH_COPILOT_CLASSIC_TOKEN }}
 
       - name: Build Notification Payload
         id: payload

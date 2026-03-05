@@ -256,6 +256,51 @@ def extract_all_failure_reasons(log_text: str, test_class: str) -> list[dict]:
     return results
 
 
+def fetch_annotations(owner: str, repo: str, job_id: int, token: str) -> list[dict]:
+    """Fetch check-run annotations for a job via the GitHub Checks API.
+
+    job_id == check_run_id for GitHub Actions jobs.
+    Returns a list of annotation dicts, or [] if unavailable.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/check-runs/{job_id}/annotations"
+    try:
+        return github_get_all_pages(url, token)
+    except Exception as exc:
+        print(f"  Warning: could not fetch annotations for job {job_id}: {exc}", file=sys.stderr)
+        return []
+
+
+def parse_annotations(annotations: list[dict]) -> list[dict]:
+    """Convert check-run annotations into the same shape as extract_all_failure_reasons.
+
+    Each annotation with annotation_level 'failure' maps to one result dict:
+        test_case        – annotation title (test method name)
+        exception_type   – first word of message if it looks like an exception class, else None
+        exception_message – remainder of message after the exception type (or full message)
+    """
+    results = []
+    for ann in annotations:
+        if ann.get("annotation_level") != "failure":
+            continue
+        title = (ann.get("title") or "").strip()
+        message = (ann.get("message") or "").strip()
+        # Try to split "ExceptionType: message text" from the first line
+        first_line = message.splitlines()[0] if message else ""
+        exc_match = re.match(r"([\w$][\w$.]*(?:Error|Exception|Failure))[:\s](.*)", first_line)
+        if exc_match:
+            exc_type = exc_match.group(1)
+            exc_msg  = exc_match.group(2).strip(" :\t") or message
+        else:
+            exc_type = None
+            exc_msg  = message or None
+        results.append({
+            "test_case":         title,
+            "exception_type":    exc_type,
+            "exception_message": exc_msg,
+        })
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Step 4: Fetch recent PRs for SHA cross-reference
 # ---------------------------------------------------------------------------
@@ -500,10 +545,17 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         if not failed_entry:
             failure_cases[group_key] = None
         else:
-            log_text = fetch_job_log(owner, repo, failed_entry["job_id"], token)
-            failure_cases[group_key] = (
-                extract_all_failure_reasons(log_text, test_class) if log_text is not None else None
-            )
+            job_id = failed_entry["job_id"]
+            annotations = fetch_annotations(owner, repo, job_id, token)
+            parsed = parse_annotations(annotations)
+            if parsed:
+                failure_cases[group_key] = parsed
+            else:
+                # Fall back to raw log regex when annotations are empty
+                log_text = fetch_job_log(owner, repo, job_id, token)
+                failure_cases[group_key] = (
+                    extract_all_failure_reasons(log_text, test_class) if log_text is not None else None
+                )
         combo_cases[tk].extend(failure_cases.get(group_key) or [])
 
     # --- Aggregate per test class ---

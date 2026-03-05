@@ -20,7 +20,6 @@ def build_message(data: dict) -> str:
     meta     = data["metadata"]
     agg      = data["aggregate"]
     per_tc   = data["per_test_class"]
-    failures = data["prs_with_persistent_failures"]
 
     since = meta["since"][:10]
     until = meta["until"][:10]
@@ -55,19 +54,6 @@ def build_message(data: dict) -> str:
             f" | {tc['any_attempt_pass_rate_pct']}%"
             f" | {emoji} {score} |"
         )
-
-    if failures:
-        lines += ["", "### 🚨 PRs with Persistent Failures", ""]
-        for pr in failures:
-            lines.append(f"**PR #{pr['pr_number']} — {pr['pr_title']}** (@{pr['pr_author']})")
-            for entry in pr.get("failed_tests", []):
-                label = f"{entry['ide_type']} {entry['ide_version']} — {entry['test_class']}"
-                lines.append(f"  ❌ {label}: failed on all {entry['attempts']} attempt(s)")
-                for case in entry.get("failed_cases") or []:
-                    exc_type = case.get("exception_type") or "unknown"
-                    exc_msg  = case.get("exception_message") or ""
-                    detail   = f"{exc_type} — {exc_msg}" if exc_msg else exc_type
-                    lines.append(f"    • {case['test_case']}: {detail}")
 
     summary = data.get("failure_summary")
     if summary:

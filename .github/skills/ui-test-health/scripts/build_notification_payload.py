@@ -60,7 +60,7 @@ def build_message(data: dict) -> str:
         lines += ["", "### 🚨 PRs with Persistent Failures", ""]
         for pr in failures:
             lines.append(f"**PR #{pr['pr_number']} — {pr['pr_title']}** (@{pr['pr_author']})")
-            for entry in pr.get("persistent_failures", []):
+            for entry in pr.get("failed_tests", []):
                 label = f"{entry['ide_type']} {entry['ide_version']} — {entry['test_class']}"
                 lines.append(f"  ❌ {label}: failed on all {entry['attempts']} attempt(s)")
                 for case in entry.get("failed_cases") or []:
@@ -68,6 +68,21 @@ def build_message(data: dict) -> str:
                     exc_msg  = case.get("exception_message") or ""
                     detail   = f"{exc_type} — {exc_msg}" if exc_msg else exc_type
                     lines.append(f"    • {case['test_case']}: {detail}")
+
+    summary = data.get("failure_summary")
+    if summary:
+        combo = summary["worst_combo"]
+        label = f"{combo['ide_type']} {combo['ide_version']} — {combo['test_class']}"
+        exc_type = summary.get("dominant_exception_type") or "unknown"
+        exc_msg  = summary.get("dominant_exception_message") or ""
+        detail   = f"{exc_type} — {exc_msg}" if exc_msg else exc_type
+        lines += [
+            "",
+            "### 💥 Failure Summary",
+            "",
+            f"Worst offender: {label} ({combo['never_passed_count']} never-passed instance(s))",
+            f"Dominant failure: {detail} ({summary['occurrence_count']} occurrence(s))",
+        ]
 
     return "\n".join(lines)
 

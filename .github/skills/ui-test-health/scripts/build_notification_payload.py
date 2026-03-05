@@ -27,18 +27,18 @@ def build_message(data: dict) -> str:
     prs   = meta["total_prs_analyzed"]
     runs  = meta["total_workflow_runs"]
 
-    pass_any        = agg["pass_rate_any_attempt_pct"]
-    pass_first      = agg["first_attempt_pass_rate_pct"]
-    retried         = agg["total_retry_attempts"]
-    retry_succ      = agg["retry_success_rate_pct"]
-    never           = agg["never_passed_rate_pct"]
-    retry_dist_str  = build_retry_dist_str(agg.get("retry_distribution_pct", {}))
+    pass_any   = agg["pass_rate_any_attempt_pct"]
+    pass_first = agg["first_attempt_pass_rate_pct"]
+    retried    = agg["total_retry_attempts"]
+    retry_succ = agg["retry_success_rate_pct"]
+    never      = agg["never_passed_rate_pct"]
+    retry_dist = build_retry_dist_str(agg.get("retry_distribution_pct", {}))
 
     lines = [
         f"## 📊 UI Test Health — Last 3 Days ({since} → {until})",
         "",
         f"**PRs analyzed:** {prs} &nbsp;|&nbsp; **Runs:** {runs} &nbsp;|&nbsp; **Pass (any):** {pass_any}% &nbsp;|&nbsp; **First-attempt:** {pass_first}%",
-        f"**Re-runs:** {retried} &nbsp;|&nbsp; **Retry success:** {retry_succ}% &nbsp;|&nbsp; **Never-passed:** {never}%",
+        f"**Re-runs:** {retried} &nbsp;|&nbsp; **Retry success:** {retry_succ}% &nbsp;|&nbsp; **Retry dist:** {retry_dist} &nbsp;|&nbsp; **Never-passed:** {never}%",
         "",
         "### 🔬 Per-Test-Class",
         "",
@@ -55,6 +55,19 @@ def build_message(data: dict) -> str:
             f" | {tc['any_attempt_pass_rate_pct']}%"
             f" | {emoji} {score} |"
         )
+
+    if failures:
+        lines += ["", "### 🚨 PRs with Persistent Failures", ""]
+        for pr in failures:
+            lines.append(f"**PR #{pr['pr_number']} — {pr['pr_title']}** (@{pr['pr_author']})")
+            for entry in pr.get("persistent_failures", []):
+                label = f"{entry['ide_type']} {entry['ide_version']} — {entry['test_class']}"
+                lines.append(f"  ❌ {label}: failed on all {entry['attempts']} attempt(s)")
+                for case in entry.get("failed_cases") or []:
+                    exc_type = case.get("exception_type") or "unknown"
+                    exc_msg  = case.get("exception_message") or ""
+                    detail   = f"{exc_type} — {exc_msg}" if exc_msg else exc_type
+                    lines.append(f"    • {case['test_case']}: {detail}")
 
     return "\n".join(lines)
 

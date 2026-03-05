@@ -156,12 +156,42 @@
                 "ide_version":    { "type": "string" },
                 "test_class":     { "type": "string" },
                 "attempts":       { "type": "integer" },
-                "latest_run_url": { "type": "string" }
+                "latest_run_url": { "type": "string" },
+                "failed_cases": {
+                  "type": ["array", "null"],
+                  "description": "Parsed failure cases from the CI job log. null=log unavailable, []=no FAILED blocks matched, [...]=one entry per FAILED block.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "test_case":          { "type": "string", "description": "e.g. 'test copilot chat end to end'" },
+                      "exception_type":     { "type": ["string", "null"], "description": "e.g. 'AssertionFailedError'" },
+                      "exception_message":  { "type": ["string", "null"], "description": "Text following the exception class name" }
+                    }
+                  }
+                }
               }
             }
           }
         }
       }
+    }
+  },
+  "failure_summary": {
+    "type": ["object", "null"],
+    "description": "The worst (ide_type, ide_version, test_class) combo by never_passed count, plus its dominant exception across all failed cases. null if no never_passed entries exist.",
+    "properties": {
+      "worst_combo": {
+        "type": "object",
+        "properties": {
+          "ide_type":           { "type": "string" },
+          "ide_version":        { "type": "string" },
+          "test_class":         { "type": "string" },
+          "never_passed_count": { "type": "integer", "description": "Number of (sha, test_class) groups that never passed" }
+        }
+      },
+      "dominant_exception_type":    { "type": ["string", "null"], "description": "Most frequent exception_type across all failed cases for the worst combo" },
+      "dominant_exception_message": { "type": ["string", "null"], "description": "A representative message for the dominant exception type" },
+      "occurrence_count":           { "type": "integer", "description": "How many FAILED cases had the dominant exception type" }
     }
   }
 }
@@ -179,6 +209,8 @@
 | `retry_success_rate_pct` | Of tests that required a retry, what % eventually passed |
 | `top_flaky_tests` | Only entries with `passed_after_retry ≥ 1`; the flakiness candidates to investigate |
 | `per_test_class` | Sorted alphabetically by `(ide_type, ide_version, test_class)` |
+| `failed_cases` | Per `failed_tests` entry: list of parsed failure cases from the CI job log. `null` = log unavailable; `[]` = log fetched but no FAILED block matched; `[…]` = one dict per FAILED block with `test_case`, `exception_type`, `exception_message`. |
+| `failure_summary` | Top-level object identifying the worst `(ide_type, ide_version, test_class)` combo by `never_passed` count, with the dominant `exception_type` and a representative message across all its failed cases. `null` when there are no `never_passed` entries. |
 
 ## Example Output
 
@@ -328,15 +360,34 @@
         {
           "ide_type": "IC", "ide_version": "2025.2", "test_class": "McpTest",
           "attempts": 2,
-          "latest_run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210099"
+          "latest_run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210099",
+          "failed_cases": [
+            {
+              "test_case": "test mcp tool invocation",
+              "exception_type": "AssertionFailedError",
+              "exception_message": "expected: <true> but was: <false>"
+            }
+          ]
         },
         {
           "ide_type": "PY", "ide_version": "2025.1", "test_class": "McpTest",
           "attempts": 2,
-          "latest_run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210088"
+          "latest_run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210088",
+          "failed_cases": null
         }
       ]
     }
-  ]
+  ],
+  "failure_summary": {
+    "worst_combo": {
+      "ide_type": "PY",
+      "ide_version": "2025.1",
+      "test_class": "McpTest",
+      "never_passed_count": 2
+    },
+    "dominant_exception_type": "AssertionFailedError",
+    "dominant_exception_message": "expected: <true> but was: <false>",
+    "occurrence_count": 2
+  }
 }
 ```

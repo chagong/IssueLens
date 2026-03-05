@@ -21,7 +21,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 
@@ -37,17 +37,21 @@ def get_token() -> str:
     return token
 
 
+def _github_api_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
 def github_get(url: str, token: str, params: dict | None = None) -> dict | list:
     """Perform a GitHub REST API GET request and return parsed JSON."""
     if params:
         url = url + "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(
         url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
+        headers=_github_api_headers(token),
     )
     for attempt in range(3):
         try:
@@ -165,6 +169,91 @@ def fetch_jobs_for_run(owner: str, repo: str, run_id: int, attempt: int, token: 
     url = f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs"
     data = github_get(url, token, params={"per_page": 100})
     return data.get("jobs", [])
+
+
+
+# ---------------------------------------------------------------------------
+# Step 3b: Fetch and parse job logs for failure reasons
+# ---------------------------------------------------------------------------
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Raise immediately on any redirect so we can capture the Location header."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(newurl, code, msg, headers, fp)
+
+
+def fetch_job_log(owner: str, repo: str, job_id: int, token: str) -> str | None:
+    """Fetch the plain-text log for a job via the GitHub API redirect.
+
+    The logs endpoint issues a 302 to a pre-signed blob URL (S3/Azure).
+    That URL must be fetched *without* the Authorization header or the
+    cloud storage service will reject the request with 400/403.
+    Returns the decoded log text, or None if the log could not be fetched.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
+    req = urllib.request.Request(url, headers=_github_api_headers(token))
+    opener = urllib.request.build_opener(_NoRedirectHandler())
+    try:
+        with opener.open(req, timeout=30):
+            pass  # non-redirect response: no log content available at this URL
+    except urllib.error.HTTPError as exc:
+        if exc.code in (301, 302, 303, 307, 308):
+            redirect_url = exc.headers.get("Location")
+            if not redirect_url:
+                return None
+            try:
+                with urllib.request.urlopen(redirect_url, timeout=60) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except Exception as fetch_exc:
+                print(f"  Warning: could not fetch log blob for job {job_id}: {fetch_exc}", file=sys.stderr)
+                return None
+        print(f"  Warning: HTTP {exc.code} fetching log for job {job_id}", file=sys.stderr)
+    except Exception as exc:
+        print(f"  Warning: could not fetch log for job {job_id}: {exc}", file=sys.stderr)
+    return None
+
+
+_FAILED_LINE_RE = re.compile(r"(\w[\w$]*)\s*>\s*(.+?)\(\)\s+FAILED", re.MULTILINE)
+_EXCEPTION_LINE_RE = re.compile(r"^\s+([\w$][\w$.]*(?:Error|Exception|Failure))\b(.*)", re.MULTILINE)
+
+
+def extract_all_failure_reasons(log_text: str, test_class: str) -> list[dict]:
+    """Parse all FAILED blocks in a CI log for the given test_class.
+
+    A single job log can contain multiple FAILED blocks (one per failed test
+    method).  Returns a list with one dict per block — never None, may be empty.
+
+    Each dict has:
+        test_case        (str)       – e.g. "test copilot chat end to end"
+        exception_type   (str|None)  – e.g. "AssertionFailedError"
+        exception_message(str|None)  – text following the exception class name
+    """
+    if not log_text:
+        return []
+    results = []
+    matches = list(_FAILED_LINE_RE.finditer(log_text))
+    for i, m in enumerate(matches):
+        if m.group(1) != test_class:
+            continue
+        test_case = m.group(2).strip()
+        # Block ends at the start of the *next* FAILED line to avoid cross-block
+        # contamination.  Fall back to a 5 KB window for the final block.
+        block_start = m.end()
+        block_end = matches[i + 1].start() if i + 1 < len(matches) else block_start + 5000
+        block_text = log_text[block_start:block_end]
+        exceptions = _EXCEPTION_LINE_RE.findall(block_text)
+        if not exceptions:
+            results.append({"test_case": test_case, "exception_type": None, "exception_message": None})
+            continue
+        # Prefer AssertionFailedError (the root assertion check); otherwise use
+        # the last (innermost / most specific) exception seen in the block.
+        preferred = next((e for e in exceptions if "AssertionFailed" in e[0]), exceptions[-1])
+        results.append({
+            "test_case": test_case,
+            "exception_type": preferred[0],
+            "exception_message": preferred[1].strip(" :\t"),
+        })
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +438,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                     "run_attempt": att,
                     "conclusion": job.get("conclusion") or (conclusion if att == attempt else "failure"),
                     "run_url": run_url,
+                    "job_id": job.get("id"),
                 })
                 parsed_any = True
 
@@ -382,6 +472,39 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         }
         if any(e["run_attempt"] > 1 for e in entries):
             total_retry_attempts += 1
+
+    # --- Fetch failure reasons for never_passed jobs (step 3b) ---
+    # failure_cases: group_key -> list[dict] | None
+    #   None  = log could not be fetched
+    #   []    = log fetched but no matching FAILED block found
+    #   [...] = one dict per FAILED block: {test_case, exception_type, exception_message}
+    # combo_counts / combo_cases are built in the same pass to avoid a second
+    # iteration over classified.
+    print("Fetching failure logs for never_passed jobs...", file=sys.stderr)
+    failure_cases: dict = {}
+    combo_counts: dict = defaultdict(int)   # tk -> never_passed group count
+    combo_cases: dict = defaultdict(list)   # tk -> flat list of all failure case dicts
+    for group_key, entries in groups.items():
+        if classified[group_key]["status"] != "never_passed":
+            continue
+        sha, ide_type, ide_version, test_class = group_key
+        tk = (ide_type, ide_version, test_class)
+        combo_counts[tk] += 1
+        # Use the latest attempt with a conclusive failure (exclude None / in-progress).
+        _in_progress = (None, "in_progress", "queued", "waiting")
+        failed_entry = next(
+            (e for e in reversed(entries)
+             if e.get("conclusion") not in ("success",) + _in_progress and e.get("job_id")),
+            None,
+        )
+        if not failed_entry:
+            failure_cases[group_key] = None
+        else:
+            log_text = fetch_job_log(owner, repo, failed_entry["job_id"], token)
+            failure_cases[group_key] = (
+                extract_all_failure_reasons(log_text, test_class) if log_text is not None else None
+            )
+        combo_cases[tk].extend(failure_cases.get(group_key) or [])
 
     # --- Aggregate per test class ---
     # retry_counts[(ide_type, ide_version, test_class)][N] = count of instances that needed N retries to pass
@@ -574,6 +697,9 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                     "test_class": tr["test_class"],
                     "attempts": tr["attempts"],
                     "latest_run_url": tr["latest_run_url"],
+                    "failed_cases": failure_cases.get(
+                        (pr["head_sha"], tr["ide_type"], tr["ide_version"], tr["test_class"])
+                    ),
                 }
                 for tr in pr["test_results"]
                 if tr["status"] == "never_passed"
@@ -586,12 +712,40 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                 "failed_tests": failed_tests,
             })
 
+    # --- Failure summary: worst (ide_type, ide_version, test_class) combo ---
+    # combo_counts and combo_cases were built during the log-fetching pass above.
+
+    failure_summary = None
+    if combo_counts:
+        worst_tk = max(combo_counts, key=lambda k: combo_counts[k])
+        w_ide_type, w_ide_version, w_test_class = worst_tk
+        all_cases = combo_cases[worst_tk]
+        exc_counts = Counter(c["exception_type"] for c in all_cases if c.get("exception_type"))
+        dominant_exc_type = exc_counts.most_common(1)[0][0] if exc_counts else None
+        dominant_msg = next(
+            (c["exception_message"] for c in all_cases
+             if c.get("exception_type") == dominant_exc_type and c.get("exception_message")),
+            None,
+        )
+        failure_summary = {
+            "worst_combo": {
+                "ide_type": w_ide_type,
+                "ide_version": w_ide_version,
+                "test_class": w_test_class,
+                "never_passed_count": combo_counts[worst_tk],
+            },
+            "dominant_exception_type": dominant_exc_type,
+            "dominant_exception_message": dominant_msg,
+            "occurrence_count": exc_counts.get(dominant_exc_type, 0) if exc_counts else 0,
+        }
+
     return {
         "aggregate": aggregate,
         "per_test_class": per_test_class,
         "per_pr": per_pr,
         "top_flaky_tests": top_flaky,
         "prs_with_persistent_failures": prs_with_failures,
+        "failure_summary": failure_summary,
     }
 
 
@@ -648,7 +802,12 @@ def main() -> None:
             "total_workflow_runs": len(runs),
             "total_prs_analyzed": len([p for p in result["per_pr"] if p["pr_number"] is not None]),
         },
-        **result,
+        "failure_summary": result["failure_summary"],
+        "aggregate": result["aggregate"],
+        "per_test_class": result["per_test_class"],
+        "per_pr": result["per_pr"],
+        "top_flaky_tests": result["top_flaky_tests"],
+        "prs_with_persistent_failures": result["prs_with_persistent_failures"],
     }
 
     # Write output

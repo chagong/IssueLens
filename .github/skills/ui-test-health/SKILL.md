@@ -45,6 +45,7 @@ Always surface at the end of the report:
 - Tests with `never_passed > 0` → **blocking** — require investigation before merging
 - Tests with `flakiness_score > 0.15` → **unstable** — candidates for stabilization
 - All entries in `prs_with_persistent_failures` → PR authors need to be notified
+- Include the `failure_summary` block to give a one-glance view of the most impactful test failure
 
 ## Output Format
 
@@ -85,6 +86,19 @@ _Only shown if `prs_with_persistent_failures` is non-empty._
 For each PR:
 > **PR #{pr_number}** [{pr_title}]({pr_url}) · @{pr_author}
 > - ❌ `{ide_type} {ide_version} — {test_class}` failed on all {attempts} attempt(s) → [run]({latest_run_url})
+>   - If `failed_cases` is a non-empty list, show each entry as a sub-bullet:
+>     - `{test_case}`: `{exception_type}` — {exception_message}
+>   - Omit the sub-bullets if `failed_cases` is null or empty
+
+### 💥 Failure Summary
+
+_Only shown if `failure_summary` is non-null._
+
+**Worst offender:** `{ide_type} {ide_version} — {test_class}` ({never_passed_count} never-passed instance(s))
+
+**Dominant failure:** `{dominant_exception_type}` ({occurrence_count} occurrence(s))
+
+**Detail:** {dominant_exception_message}
 
 ### 📈 Health Assessment
 

@@ -228,40 +228,128 @@ def extract_all_failure_reasons(log_text: str, test_class: str) -> list[dict]:
     method).  Returns a list with one dict per block — never None, may be empty.
 
     Each dict has:
-        test_case        (str)       – e.g. "test copilot chat end to end"
-        exception_type   (str|None)  – e.g. "AssertionFailedError"
-        exception_message(str|None)  – text following the exception class name
+        test_case         (str)       – e.g. "test copilot chat end to end"
+        exception_type    (str|None)  – e.g. "WaitForConditionTimeoutException"
+        exception_message (str|None)  – human-readable error description
+        error_category    (str)       – classified category
+        stack_function    (str|None)  – topmost copilot function in stack trace
     """
     if not log_text:
         return []
     log_text = _TIMESTAMP_RE.sub("", log_text)
+    _copilot_stack_re = re.compile(r"com\.github\.copilot[\w.]*\.(\w+)\(")
     results = []
     matches = list(_FAILED_LINE_RE.finditer(log_text))
     for i, m in enumerate(matches):
         if m.group(1) != test_class:
             continue
         test_case = m.group(2).strip()
-        # Block ends at the start of the *next* FAILED line to avoid cross-block
-        # contamination.  Fall back to a 5 KB window for the final block.
         block_start = m.end()
         block_end = matches[i + 1].start() if i + 1 < len(matches) else block_start + 5000
         block_text = log_text[block_start:block_end]
+
+        # Look for ----Driver Error---- marker in the block
+        driver_error_msg = None
+        driver_lines = block_text.splitlines()
+        for di, dline in enumerate(driver_lines):
+            if "----Driver Error----" in dline:
+                for dk in range(di + 1, min(di + 5, len(driver_lines))):
+                    candidate = driver_lines[dk].strip()
+                    if candidate and not candidate.startswith("---") and not candidate.startswith("at "):
+                        driver_error_msg = candidate
+                        break
+                break
+
+        # Extract stack function
+        stack_function = None
+        for dline in driver_lines:
+            m_stack = _copilot_stack_re.search(dline)
+            if m_stack:
+                stack_function = m_stack.group(1)
+                break
+
         exceptions = _EXCEPTION_LINE_RE.findall(block_text)
         if not exceptions:
-            results.append({"test_case": test_case, "exception_type": None, "exception_message": None})
+            error_category = classify_error_category(None, driver_error_msg, driver_error_msg)
+            results.append({
+                "test_case": test_case, "exception_type": None,
+                "exception_message": driver_error_msg,
+                "error_category": error_category, "stack_function": stack_function,
+            })
             continue
-        # Prefer AssertionFailedError (the root assertion check); otherwise use
-        # the last (innermost / most specific) exception seen in the block.
-        preferred = next((e for e in exceptions if "AssertionFailed" in e[0]), exceptions[-1])
+
+        # Prefer specific exception types over generic AssertionFailedError.
+        _generic = {"AssertionFailedError", "AssertionError", "AssertionFailure"}
+        specific = next((e for e in exceptions if e[0].split(".")[-1] not in _generic
+                         and e[0].split(".")[-1] != "DriverWithContextError"), None)
+        preferred = specific or next((e for e in exceptions if "AssertionFailed" in e[0]), exceptions[-1])
+        exc_type = preferred[0].split(".")[-1]
+        exc_msg = driver_error_msg or preferred[1].strip(" :\t")
+        error_category = classify_error_category(exc_type, exc_msg, driver_error_msg)
         results.append({
             "test_case": test_case,
-            "exception_type": preferred[0],
-            "exception_message": preferred[1].strip(" :\t"),
+            "exception_type": exc_type,
+            "exception_message": exc_msg,
+            "error_category": error_category,
+            "stack_function": stack_function,
         })
     return results
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\?(\[[\d;]*[A-Za-z])")
+
+
+# ---------------------------------------------------------------------------
+# Error classification
+# ---------------------------------------------------------------------------
+
+_TIMEOUT_RE = re.compile(r"Exceeded timeout \(PT([^)]+)\)|Timeout\((\d+\w?)\)")
+_COMPONENT_RE = re.compile(r"Failed: Find (\w+(?:\[.*?\])?)")
+_ASSERTION_EXPECT_RE = re.compile(r"Expected .+? but (?:got|was)|expected: <.*?> but was: <")
+
+
+def classify_error_category(exc_type: str | None, exc_msg: str | None,
+                            raw_error: str | None) -> str:
+    """Classify an error into a root cause category.
+
+    Categories:
+      - timeout:             Exceeded timeout or Timeout(Xs) for condition functions
+      - component_not_found: Failed to find a UI component via xpath (includes component lookup timeouts)
+      - assertion_mismatch:  Expected X but got Y (logic / assertion failures)
+      - install_state:       Install/Details button state mismatch
+      - other:               Unclassified
+
+    Order matters: component_not_found is checked before timeout because
+    "Timeout(5s): Failed: Find UiComponent[...]" is a component issue, not a
+    general condition timeout.
+    """
+    msg = raw_error or exc_msg or ""
+
+    # Component not found: "Failed: Find UiComponent[xpath=...]" or "Timeout(Xs): Failed: Find..."
+    # Must be checked BEFORE timeout — "Timeout(5s): Failed: Find..." is a component issue.
+    if "Failed: Find" in msg:
+        return "component_not_found"
+    if exc_type and "ComponentLookup" in exc_type:
+        return "component_not_found"
+
+    # Timeout: "Exceeded timeout (PT30S)..." or "Timeout(5s):..." without "Failed: Find"
+    if _TIMEOUT_RE.search(msg):
+        return "timeout"
+    if exc_type and "Timeout" in exc_type:
+        return "timeout"
+
+    # Install button state mismatch
+    if "button text to be 'Install'" in msg or "expected: <Install>" in msg:
+        return "install_state"
+
+    # Assertion mismatch: "Expected X but got Y" or "expected: <X> but was: <Y>"
+    if _ASSERTION_EXPECT_RE.search(msg):
+        return "assertion_mismatch"
+
+    if exc_type and "Assertion" in exc_type:
+        return "assertion_mismatch"
+
+    return "other"
 
 
 def fetch_annotations(owner: str, repo: str, sha: str, ide_type: str, ide_version: str,
@@ -307,12 +395,19 @@ def parse_annotations(annotations: list[dict]) -> list[dict]:
         <human-readable message line(s)>
         InnerExceptionType
             at …stack…
-    We skip the wrapper and extract the inner type + the descriptive line before it.
+    We use the ----Driver Error---- marker to find the most informative error
+    description, then extract the specific inner exception type for classification.
     """
     # Wrapper types that carry no useful message of their own
     _WRAPPER_TYPES = {"DriverWithContextError"}
+    # Generic assertion types whose inline message (e.g. "expected: <true> but was: <false>")
+    # is less informative than the ----Driver Error---- description line.
+    _GENERIC_ASSERTION_TYPES = {"AssertionFailedError", "AssertionError", "AssertionFailure",
+                                "AssertionFailedError:", "AssertionError:", "AssertionFailure:"}
     _skip = re.compile(r"^-{3,}|^\s*at |^Caused by:|^Screenshot|^Driver doc")
     _exc_re = re.compile(r"^([\w$][\w$.]*(?:Error|Exception|Failure))\b")
+    _DRIVER_ERROR_MARKER = "----Driver Error----"
+    _copilot_stack_re = re.compile(r"com\.github\.copilot[\w.]*\.(\w+)\(")
 
     results = []
     for ann in annotations:
@@ -325,7 +420,32 @@ def parse_annotations(annotations: list[dict]) -> list[dict]:
         message = _ANSI_RE.sub("", ann.get("message") or "")
         lines = [l.strip() for l in message.splitlines() if l.strip()]
 
-        # Collect all candidate exception lines (not stack / noise)
+        # --- Extract the ----Driver Error---- message (most informative line) ---
+        driver_error_msg = None
+        driver_error_idx = None
+        for idx, line in enumerate(lines):
+            if _DRIVER_ERROR_MARKER in line:
+                driver_error_idx = idx
+                # The first non-noise, non-exception line after the marker is the
+                # human-readable error description.
+                for k in range(idx + 1, len(lines)):
+                    candidate = lines[k]
+                    if _skip.match(candidate) or _exc_re.match(candidate):
+                        break
+                    driver_error_msg = candidate
+                    break
+                break
+
+        # --- Extract topmost com.github.copilot function from stack trace ---
+        stack_function = None
+        search_start = driver_error_idx + 1 if driver_error_idx is not None else 0
+        for line in lines[search_start:]:
+            m_stack = _copilot_stack_re.search(line)
+            if m_stack:
+                stack_function = m_stack.group(1)
+                break
+
+        # --- Collect all candidate exception lines (not stack / noise) ---
         exc_lines = [
             (j, l) for j, l in enumerate(lines)
             if _exc_re.match(l) and not _skip.match(l)
@@ -333,39 +453,55 @@ def parse_annotations(annotations: list[dict]) -> list[dict]:
 
         exc_type = exc_msg = None
         if exc_lines:
-            # Prefer AssertionFailed* (real assertion); otherwise prefer a non-wrapper type.
-            # Simple class name = last dotted segment before the first ":"
             def _simple_type(line: str) -> str:
                 return line.split(":")[0].strip().split(".")[-1]
 
+            # Prefer specific inner exception types (e.g. WaitForConditionTimeoutException,
+            # ComponentLookupException) over generic wrappers and assertion types, because
+            # the specific type reveals the actual root cause.
             preferred = (
-                next((x for x in exc_lines if "AssertionFailed" in x[1]), None)
+                next((x for x in exc_lines
+                      if _simple_type(x[1]) not in _WRAPPER_TYPES
+                      and _simple_type(x[1]) not in _GENERIC_ASSERTION_TYPES), None)
+                or next((x for x in exc_lines if "AssertionFailed" in x[1]), None)
                 or next((x for x in exc_lines if _simple_type(x[1]) not in _WRAPPER_TYPES), None)
                 or exc_lines[0]
             )
             j, line = preferred
             m = _exc_re.match(line)
             exc_type = m.group(1).split(".")[-1]
-            # Inline message (text after "ExcType: ")
-            inline = re.sub(r"^[\w$][\w$.]*(?:Error|Exception|Failure)[:\s]*", "", line).strip(" :\t")
-            if inline:
-                exc_msg = inline
+
+            # Always prefer the ----Driver Error---- message when available — it
+            # contains the actionable human-readable description (e.g. "Exceeded
+            # timeout (PT30S)…", "Failed: Find UiComponent[…]", "Expected conflict
+            # hint…").  The inline message of generic assertion types like
+            # "expected: <true> but was: <false>" is not useful for root cause analysis.
+            if driver_error_msg:
+                exc_msg = driver_error_msg
             else:
-                # Look backwards for the nearest descriptive (non-noise, non-exception) line.
-                # Skip trivially short/meaningless tokens like "none", "null", single words.
-                for k in range(j - 1, -1, -1):
-                    candidate = lines[k]
-                    if _skip.match(candidate) or _exc_re.match(candidate):
-                        continue
-                    if len(candidate.split()) < 2 and candidate.lower() in {"none", "null", "true", "false", ""}:
-                        continue
-                    exc_msg = candidate
-                    break
+                # Fallback: inline message or backward search
+                inline = re.sub(r"^[\w$][\w$.]*(?:Error|Exception|Failure)[:\s]*", "", line).strip(" :\t")
+                if inline:
+                    exc_msg = inline
+                else:
+                    for k in range(j - 1, -1, -1):
+                        candidate = lines[k]
+                        if _skip.match(candidate) or _exc_re.match(candidate):
+                            continue
+                        if len(candidate.split()) < 2 and candidate.lower() in {"none", "null", "true", "false", ""}:
+                            continue
+                        exc_msg = candidate
+                        break
+
+        # --- Classify error category ---
+        error_category = classify_error_category(exc_type, exc_msg, driver_error_msg)
 
         results.append({
             "test_case":         title,
             "exception_type":    exc_type,
             "exception_message": exc_msg,
+            "error_category":    error_category,
+            "stack_function":    stack_function,
         })
     return results
 
@@ -498,6 +634,117 @@ def safe_score(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 4)
 
 
+_CATEGORY_DISPLAY = {
+    "timeout": "Exceeded Timeout",
+    "component_not_found": "UI Component Not Found",
+    "assertion_mismatch": "Assertion Mismatch",
+    "install_state": "Install Button State",
+    "other": "Other",
+}
+
+
+def _extract_timeout_detail(msg: str) -> str:
+    """Extract a human-readable timeout sub-label from the error message."""
+    m = _TIMEOUT_RE.search(msg or "")
+    timeout_val = (m.group(1) or m.group(2)) if m else None
+    return f"({timeout_val})" if timeout_val else ""
+
+
+def _extract_component_detail(msg: str) -> str:
+    """Extract a short component identifier from a 'Failed: Find' message."""
+    if not msg:
+        return "unknown"
+    m = re.search(r"Find (\w+)\[", msg)
+    component_type = m.group(1) if m else "unknown"
+    # Try to extract a recognizable attribute for display
+    attr_m = re.search(r"@(?:text|myicon|class|tooltiptext|name)='([^']+)'", msg)
+    attr = attr_m.group(1) if attr_m else ""
+    if attr:
+        return f"{component_type}[{attr}]"
+    return component_type
+
+
+def _build_root_cause_analysis(all_cases: list[dict]) -> dict:
+    """Build root cause analysis from all collected failure cases.
+
+    Groups failures by error_category, then builds subcategories within each:
+    - timeout: grouped by stack_function
+    - component_not_found: grouped by component identifier
+    - assertion_mismatch: grouped by assertion description
+    - other: grouped by exception_type
+    """
+    if not all_cases:
+        return {"total_failure_instances": 0, "categories": []}
+
+    # Group by category
+    by_category: dict = defaultdict(list)
+    for case in all_cases:
+        cat = case.get("error_category", "other")
+        by_category[cat].append(case)
+
+    categories = []
+    for cat in ["timeout", "component_not_found", "assertion_mismatch", "install_state", "other"]:
+        cases = by_category.get(cat, [])
+        if not cases:
+            continue
+
+        # Build subcategories based on category type
+        sub_groups: dict = defaultdict(list)
+        for c in cases:
+            msg = c.get("exception_message") or ""
+            if cat == "timeout":
+                fn = c.get("stack_function") or "unknown"
+                detail = _extract_timeout_detail(msg)
+                label = f"{fn} {detail}".strip()
+            elif cat == "component_not_found":
+                label = _extract_component_detail(msg)
+            elif cat == "assertion_mismatch":
+                # Group by the first ~60 chars of the message to cluster similar assertions
+                label = msg[:60].strip() if msg else "unknown"
+            elif cat == "install_state":
+                label = msg[:60].strip() if msg else "unknown"
+            else:
+                label = c.get("exception_type") or "unknown"
+            sub_groups[label].append(c)
+
+        subcategories = sorted(
+            [
+                {
+                    "label": label,
+                    "count": len(sub_cases),
+                    "sample_message": next(
+                        (c["exception_message"] for c in sub_cases if c.get("exception_message")),
+                        None,
+                    ),
+                }
+                for label, sub_cases in sub_groups.items()
+            ],
+            key=lambda x: -x["count"],
+        )
+
+        sample_errors = list({
+            c["exception_message"] for c in cases
+            if c.get("exception_message")
+        })[:5]
+
+        categories.append({
+            "category": cat,
+            "display_name": _CATEGORY_DISPLAY.get(cat, cat),
+            "count": len(cases),
+            "pct": round(len(cases) / len(all_cases) * 100, 1),
+            "subcategories": subcategories,
+            "sample_errors": sample_errors,
+        })
+
+    # Sort by count descending
+    categories.sort(key=lambda x: -x["count"])
+
+    return {
+        "total_failure_instances": len(all_cases),
+        "categories": categories,
+    }
+
+
 def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token: str) -> dict:
     """
     Core aggregation: group runs by (head_sha, test_key), classify retry patterns,
@@ -587,68 +834,84 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         if any(e["run_attempt"] > 1 for e in entries):
             total_retry_attempts += 1
 
-    # --- Fetch failure reasons for never_passed jobs (step 3b) ---
+    # --- Fetch failure reasons for all failed jobs (step 3b) ---
     # failure_cases: group_key -> list[dict] | None
     #   None  = log could not be fetched
     #   []    = log fetched but no matching FAILED block found
-    #   [...] = one dict per FAILED block: {test_case, exception_type, exception_message}
-    # Pass 1 — count never_passed per combo (no API calls).
-    # Pass 2 — fetch annotations only for the worst combo (capped) + per-PR entries (capped).
-    _MAX_SUMMARY_SAMPLES = 5   # annotation fetches for failure_summary dominant-exception detection
-    _MAX_PR_SAMPLES      = 3   # annotation fetches per (pr, test_class) entry for failed_cases
+    #   [...] = one dict per FAILED block: {test_case, exception_type, exception_message, error_category, stack_function}
+    # Fetch annotations for never_passed jobs (all), plus a sample of first-attempt
+    # failures from passed_after_retry jobs for root cause analysis coverage.
+    _MAX_ANNOTATION_FETCHES = 50  # total annotation fetch budget across all groups
+    _MAX_PR_SAMPLES = 3           # per (sha, test_class) for per-PR failed_cases
 
-    print("Counting never-passed jobs per combo...", file=sys.stderr)
+    print("Collecting failed jobs for root cause analysis...", file=sys.stderr)
     failure_cases: dict = {}
+    all_failure_cases: list = []   # flat list of all failure case dicts for root cause analysis
     combo_counts: dict = defaultdict(int)   # tk -> never_passed group count
     combo_cases: dict = defaultdict(list)   # tk -> flat list of all failure case dicts
-    never_passed_groups: list = []          # [(group_key, failed_entry)] for pass 2
     _in_progress = (None, "in_progress", "queued", "waiting")
+
+    # Collect all groups that have failures (never_passed or failed first attempts)
+    failed_groups: list = []  # [(group_key, failed_entry, is_never_passed)]
     for group_key, entries in groups.items():
-        if classified[group_key]["status"] != "never_passed":
-            continue
+        status = classified[group_key]["status"]
         sha, ide_type, ide_version, test_class = group_key
         tk = (ide_type, ide_version, test_class)
-        combo_counts[tk] += 1
-        failed_entry = next(
-            (e for e in reversed(entries)
-             if e.get("conclusion") not in ("success",) + _in_progress and e.get("job_id")),
-            None,
-        )
-        never_passed_groups.append((group_key, failed_entry))
 
-    # Identify worst combo upfront so we can prioritise its jobs in pass 2.
-    worst_tk = max(combo_counts, key=lambda k: combo_counts[k]) if combo_counts else None
+        if status == "never_passed":
+            combo_counts[tk] += 1
+            failed_entry = next(
+                (e for e in reversed(entries)
+                 if e.get("conclusion") not in ("success",) + _in_progress and e.get("job_id")),
+                None,
+            )
+            failed_groups.append((group_key, failed_entry, True))
+        elif status == "passed_after_retry":
+            # The first attempt failed — sample it for root cause analysis
+            first = entries[0] if entries else None
+            if first and first.get("conclusion") != "success" and first.get("job_id"):
+                failed_groups.append((group_key, first, False))
 
-    print("Fetching failure annotations for never_passed jobs...", file=sys.stderr)
-    summary_samples: dict = defaultdict(int)   # tk -> fetches done for summary
-    pr_samples: dict = defaultdict(int)        # (sha, tk) -> fetches done for this PR entry
-    for group_key, failed_entry in never_passed_groups:
+    # Prioritize: never_passed first, then passed_after_retry
+    failed_groups.sort(key=lambda x: (0 if x[2] else 1))
+
+    print(f"Fetching failure annotations for {min(len(failed_groups), _MAX_ANNOTATION_FETCHES)} "
+          f"of {len(failed_groups)} failed groups...", file=sys.stderr)
+    fetch_count = 0
+    pr_samples: dict = defaultdict(int)
+    for group_key, failed_entry, is_never_passed in failed_groups:
         sha, ide_type, ide_version, test_class = group_key
         tk = (ide_type, ide_version, test_class)
         pr_key = (sha, tk)
 
-        # Decide whether to fetch for summary and/or per-PR failed_cases.
-        want_summary = (tk == worst_tk and summary_samples[tk] < _MAX_SUMMARY_SAMPLES)
-        want_pr      = (pr_samples[pr_key] < _MAX_PR_SAMPLES)
-
-        if not failed_entry or (not want_summary and not want_pr):
-            failure_cases[group_key] = None
+        if fetch_count >= _MAX_ANNOTATION_FETCHES:
+            if is_never_passed:
+                failure_cases[group_key] = None
             continue
+
+        if not failed_entry:
+            if is_never_passed:
+                failure_cases[group_key] = None
+            continue
+
+        # For per-PR display, cap samples per (sha, test_class)
+        want_pr = is_never_passed and pr_samples[pr_key] < _MAX_PR_SAMPLES
 
         job_id = failed_entry["job_id"]
         annotations = fetch_annotations(owner, repo, sha, ide_type, ide_version, test_class, token)
         parsed = parse_annotations(annotations)
         if not parsed:
-            # Fall back to raw log regex when test-report check run is absent
             log_text = fetch_job_log(owner, repo, job_id, token)
             parsed = extract_all_failure_reasons(log_text, test_class) if log_text is not None else None
 
-        failure_cases[group_key] = parsed
-        if want_summary:
-            combo_cases[tk].extend(parsed or [])
-            summary_samples[tk] += 1
+        if is_never_passed:
+            failure_cases[group_key] = parsed
+        if parsed:
+            all_failure_cases.extend(parsed)
+            combo_cases[tk].extend(parsed)
         if want_pr:
             pr_samples[pr_key] += 1
+        fetch_count += 1
 
     # --- Aggregate per test class ---
     # retry_counts[(ide_type, ide_version, test_class)][N] = count of instances that needed N retries to pass
@@ -883,6 +1146,9 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
             "occurrence_count": exc_counts.get(dominant_exc_type, 0) if exc_counts else 0,
         }
 
+    # --- Root cause analysis: group all failures by error category ---
+    root_cause_analysis = _build_root_cause_analysis(all_failure_cases)
+
     return {
         "aggregate": aggregate,
         "per_test_class": per_test_class,
@@ -890,6 +1156,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         "top_flaky_tests": top_flaky,
         "prs_with_persistent_failures": prs_with_failures,
         "failure_summary": failure_summary,
+        "root_cause_analysis": root_cause_analysis,
     }
 
 
@@ -947,6 +1214,7 @@ def main() -> None:
             "total_prs_analyzed": len([p for p in result["per_pr"] if p["pr_number"] is not None]),
         },
         "failure_summary": result["failure_summary"],
+        "root_cause_analysis": result["root_cause_analysis"],
         "aggregate": result["aggregate"],
         "per_test_class": result["per_test_class"],
         "per_pr": result["per_pr"],

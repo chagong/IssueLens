@@ -2,9 +2,14 @@ name: UI Test Health Report (Personal)
 
 on:
   schedule:
-    - cron: '0 1 * * 1-5'  # 09:00 UTC+8 (Shanghai) Mon–Fri
+    - cron: '0 1 * * 1-5'  # 09:00 UTC+8 (Shanghai) Mon-Fri
   workflow_dispatch:
     inputs:
+      days:
+        description: 'Look-back window in days'
+        type: number
+        required: false
+        default: 3
       enable_notification:
         description: 'Enable notification'
         type: boolean
@@ -30,11 +35,19 @@ jobs:
           python .github/skills/ui-test-health/scripts/fetch_ui_test_runs.py \
             --owner microsoft \
             --repo copilot-intellij \
-            --days 3 \
+            --days ${{ inputs.days || 3 }} \
             --workflow-name "UI Test New" \
             --output output/ui_test_health.json
         env:
           GITHUB_PAT: ${{ secrets.NLIU_GH_COPILOT_CLASSIC_TOKEN }}
+
+      - name: Upload Health Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-health-report
+          path: output/ui_test_health.json
+          retention-days: 30
 
       - name: Build Notification Payload
         id: payload

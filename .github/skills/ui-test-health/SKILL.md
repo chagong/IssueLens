@@ -100,13 +100,44 @@ _Only shown if `failure_summary` is non-null._
 
 **Detail:** {dominant_exception_message}
 
+### 🔍 Root Cause Analysis
+
+_Only shown if `root_cause_analysis.categories` is non-empty._
+
+Groups all failure instances by error pattern (not by test class) to reveal systemic issues.
+
+**Summary table:**
+
+| Category | Count | % | Top Sub-cause |
+|---|---|---|---|
+| {display_name} | {count} | {pct}% | {subcategories[0].label} |
+
+**Error categories:**
+
+| Category | What it matches | Typical root cause |
+|---|---|---|
+| `timeout` | `Exceeded timeout (PTxx)`, `Timeout(Xs)` | Backend connectivity, feature not loading, insufficient timeout |
+| `component_not_found` | `Failed: Find UiComponent[xpath=...]` | UI refactoring changed class names/icons, plugin not loaded |
+| `assertion_mismatch` | `Expected X but got Y`, `expected: <X> but was: <Y>` | Logic bugs, response format changes |
+| `install_state` | `Expected button text to be 'Install'` | Plugin state issues |
+| `other` | Unclassified errors | Various |
+
+**Subcategory breakdown:** For each category with >1 subcategory, show:
+- `{label}`: {count}x
+
+For `timeout` subcategories, the label includes the failing function name extracted from the
+`com.github.copilot` stack trace (e.g. `newSession (30S)`, `submitAndWaitForMessageSent (10S)`).
+
+For `component_not_found` subcategories, the label includes the component type and identifying
+attribute (e.g. `UiComponent[Copilot]`, `ActionButtonUi[coding_agent.svg]`).
+
 ### 📈 Health Assessment
 
 Write a 3–5 sentence narrative covering:
-- Overall health verdict: **Healthy** (pass rate ≥ 90%, never-passed rate < 5%) / **Marginal** / **Unhealthy**
+- Overall health verdict: **Healthy** (pass rate >= 90%, never-passed rate < 5%) / **Marginal** / **Unhealthy**
 - Which test class or IDE combo shows the most problems
-- Whether failures look infrastructure-related (broad failures across many PRs) vs code-related (failures isolated to specific PRs/test classes)
-- Recommended next action (if any)
+- Root cause distribution: highlight the dominant error category and whether it suggests infrastructure (timeouts spread across many PRs), UI refactoring (component_not_found), or logic bugs (assertion_mismatch isolated to specific tests)
+- Prioritized fix recommendations based on root cause categories (fix the highest-count category first)
 
 ---
 
@@ -118,3 +149,6 @@ For full JSON schema and field definitions, see [references/json-schema.md](refe
 - Job names are parsed dynamically using the pattern `UI Test ({ide_type}, {ide_version}, {test_class})`, so new matrix entries appear in reports automatically without script changes
 - Runs with no associated PR (e.g. merge queue, orphaned re-runs) are counted in aggregate totals but omitted from per-PR breakdowns
 - `cancelled` jobs count as failures for retry-pattern classification
+- Error classification uses the `----Driver Error----` marker in test annotations to extract the human-readable error description, then categorizes by pattern matching
+- The `stack_function` field for timeout errors is extracted from the first `com.github.copilot` frame in the stack trace, identifying which test step function timed out
+- Failure annotations are fetched for both `never_passed` and `passed_after_retry` (first failed attempt) groups, giving root cause analysis coverage across all failure types

@@ -53,9 +53,9 @@ jobs:
         id: payload
         run: python .github/skills/ui-test-health/scripts/build_notification_payload.py
 
-      - name: Trigger Personal Notification
+      - name: Trigger Notification
         if: ${{ github.event_name == 'schedule' || inputs.enable_notification == true }}
         uses: ./.github/actions/notification
         with:
-          url: ${{ secrets.PERSONAL_NOTIFICATION_URL }}
+          url: ${{ secrets.NOTIFICATION_URL_JETBRAINS }}
           payload: ${{ steps.payload.outputs.payload }}

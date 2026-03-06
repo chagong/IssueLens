@@ -173,7 +173,6 @@ def main() -> None:
         "title": f"UI Test Health Report — {since} to {until}",
         "message": build_message(data),
         "workflowRunUrl": run_url,
-        "recipient": "nliu@microsoft.com",
     }
 
     compact = json.dumps(payload)

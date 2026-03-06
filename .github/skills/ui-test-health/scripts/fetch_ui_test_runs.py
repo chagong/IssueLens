@@ -1157,11 +1157,11 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         all_cases = combo_cases[worst_tk]
         exc_counts = Counter(c["exception_type"] for c in all_cases if c.get("exception_type"))
         dominant_exc_type = exc_counts.most_common(1)[0][0] if exc_counts else None
-        dominant_msg = next(
-            (c["exception_message"] for c in all_cases
-             if c.get("exception_type") == dominant_exc_type and c.get("exception_message")),
-            None,
+        msg_counts = Counter(
+            c["exception_message"] for c in all_cases
+            if c.get("exception_type") == dominant_exc_type and c.get("exception_message")
         )
+        dominant_msg = msg_counts.most_common(1)[0][0] if msg_counts else None
         failure_summary = {
             "worst_combo": {
                 "ide_type": w_ide_type,

@@ -156,8 +156,77 @@
                 "ide_version":    { "type": "string" },
                 "test_class":     { "type": "string" },
                 "attempts":       { "type": "integer" },
-                "latest_run_url": { "type": "string" }
+                "latest_run_url": { "type": "string" },
+                "failed_cases": {
+                  "type": ["array", "null"],
+                  "description": "Parsed failure cases from the CI job log. null=log unavailable, []=no FAILED blocks matched, [...]=one entry per FAILED block.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "test_case":          { "type": "string", "description": "e.g. 'test copilot chat end to end'" },
+                      "exception_type":     { "type": ["string", "null"], "description": "Specific inner exception type, e.g. 'WaitForConditionTimeoutException', 'ComponentLookupException'. Prefers specific types over generic 'AssertionFailedError'." },
+                      "exception_message":  { "type": ["string", "null"], "description": "Human-readable error description from the ----Driver Error---- marker. E.g. 'Exceeded timeout (PT30S) for condition function' or 'Failed: Find UiComponent[...]'." },
+                      "error_category":     { "type": "string", "enum": ["timeout", "component_not_found", "assertion_mismatch", "install_state", "other"], "description": "Classified error category for root cause analysis" },
+                      "stack_function":     { "type": ["string", "null"], "description": "Topmost com.github.copilot function in the stack trace, e.g. 'newSession', 'submitAndWaitForMessageSent'. Useful for timeout diagnosis." }
+                    }
+                  }
+                }
               }
+            }
+          }
+        }
+      }
+    }
+  },
+  "failure_summary": {
+    "type": ["object", "null"],
+    "description": "The worst (ide_type, ide_version, test_class) combo by never_passed count, plus its dominant exception across all failed cases. null if no never_passed entries exist.",
+    "properties": {
+      "worst_combo": {
+        "type": "object",
+        "properties": {
+          "ide_type":           { "type": "string" },
+          "ide_version":        { "type": "string" },
+          "test_class":         { "type": "string" },
+          "never_passed_count": { "type": "integer", "description": "Number of (sha, test_class) groups that never passed" }
+        }
+      },
+      "dominant_exception_type":    { "type": ["string", "null"], "description": "Most frequent exception_type across all failed cases for the worst combo" },
+      "dominant_exception_message": { "type": ["string", "null"], "description": "A representative message for the dominant exception type" },
+      "occurrence_count":           { "type": "integer", "description": "How many FAILED cases had the dominant exception type" }
+    }
+  },
+  "root_cause_analysis": {
+    "type": "object",
+    "description": "Groups all collected failure instances by error pattern for root cause diagnosis. Covers both never_passed and first-attempt failures from passed_after_retry groups.",
+    "properties": {
+      "total_failure_instances": { "type": "integer", "description": "Total number of individual failure cases analyzed" },
+      "categories": {
+        "type": "array",
+        "description": "Failure categories sorted by count descending",
+        "items": {
+          "type": "object",
+          "properties": {
+            "category":     { "type": "string", "enum": ["timeout", "component_not_found", "assertion_mismatch", "install_state", "other"] },
+            "display_name": { "type": "string", "description": "Human-readable category name" },
+            "count":        { "type": "integer" },
+            "pct":          { "type": "number", "description": "Percentage of total_failure_instances" },
+            "subcategories": {
+              "type": "array",
+              "description": "Breakdown within the category. For timeout: by stack function. For component_not_found: by component. For assertion_mismatch: by assertion description.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "label":          { "type": "string", "description": "Sub-cause label, e.g. 'newSession (30S)' or 'UiComponent[Copilot]'" },
+                  "count":          { "type": "integer" },
+                  "sample_message": { "type": ["string", "null"], "description": "A representative error message for this sub-cause" }
+                }
+              }
+            },
+            "sample_errors": {
+              "type": "array",
+              "description": "Up to 5 unique error messages from this category",
+              "items": { "type": "string" }
             }
           }
         }
@@ -179,6 +248,11 @@
 | `retry_success_rate_pct` | Of tests that required a retry, what % eventually passed |
 | `top_flaky_tests` | Only entries with `passed_after_retry ≥ 1`; the flakiness candidates to investigate |
 | `per_test_class` | Sorted alphabetically by `(ide_type, ide_version, test_class)` |
+| `failed_cases` | Per `failed_tests` entry: list of parsed failure cases from the CI job log. `null` = log unavailable; `[]` = log fetched but no FAILED block matched; `[…]` = one dict per FAILED block with `test_case`, `exception_type`, `exception_message`, `error_category`, `stack_function`. |
+| `error_category` | Classified root cause category. `timeout` = exceeded timeout / condition wait. `component_not_found` = UI element not found via xpath. `assertion_mismatch` = expected vs actual value mismatch. `install_state` = install button state wrong. `other` = unclassified. |
+| `stack_function` | Topmost `com.github.copilot` function in the stack trace. Identifies which test step function caused a timeout (e.g. `newSession`, `submitAndWaitForMessageSent`, `verifyInlineCodeReviewComponentIsShowing`). `null` when no copilot stack frame found. |
+| `failure_summary` | Top-level object identifying the worst `(ide_type, ide_version, test_class)` combo by `never_passed` count, with the dominant `exception_type` and a representative message across all its failed cases. `null` when there are no `never_passed` entries. |
+| `root_cause_analysis` | Groups all failure instances by error pattern (not by test class). Categories are sorted by count descending. Subcategories within each category provide fine-grained breakdown (e.g. which function timed out, which component wasn't found). Covers both `never_passed` and first-attempt failures from `passed_after_retry` groups. |
 
 ## Example Output
 
@@ -328,15 +402,81 @@
         {
           "ide_type": "IC", "ide_version": "2025.2", "test_class": "McpTest",
           "attempts": 2,
-          "latest_run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210099"
+          "latest_run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210099",
+          "failed_cases": [
+            {
+              "test_case": "test mcp tool invocation",
+              "exception_type": "WaitForConditionTimeoutException",
+              "exception_message": "Exceeded timeout (PT30S) for condition function",
+              "error_category": "timeout",
+              "stack_function": "newSession"
+            }
+          ]
         },
         {
           "ide_type": "PY", "ide_version": "2025.1", "test_class": "McpTest",
           "attempts": 2,
-          "latest_run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210088"
+          "latest_run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210088",
+          "failed_cases": null
         }
       ]
     }
-  ]
+  ],
+  "failure_summary": {
+    "worst_combo": {
+      "ide_type": "PY",
+      "ide_version": "2025.1",
+      "test_class": "McpTest",
+      "never_passed_count": 2
+    },
+    "dominant_exception_type": "WaitForConditionTimeoutException",
+    "dominant_exception_message": "Exceeded timeout (PT30S) for condition function",
+    "occurrence_count": 2
+  },
+  "root_cause_analysis": {
+    "total_failure_instances": 12,
+    "categories": [
+      {
+        "category": "timeout",
+        "display_name": "Exceeded Timeout",
+        "count": 5,
+        "pct": 41.7,
+        "subcategories": [
+          { "label": "newSession (30S)", "count": 3, "sample_message": "Exceeded timeout (PT30S) for condition function" },
+          { "label": "submitAndWaitForMessageSent (10S)", "count": 2, "sample_message": "Exceeded timeout (PT10S) for condition function" }
+        ],
+        "sample_errors": [
+          "Exceeded timeout (PT30S) for condition function",
+          "Exceeded timeout (PT10S) for condition function"
+        ]
+      },
+      {
+        "category": "component_not_found",
+        "display_name": "UI Component Not Found",
+        "count": 4,
+        "pct": 33.3,
+        "subcategories": [
+          { "label": "UiComponent[Copilot]", "count": 3, "sample_message": "Timeout(5s): Failed: Find UiComponent[xpath=//div[@class='ContentTabLabel' and contains(@text, 'Copilot')]]" },
+          { "label": "ActionButtonUi[coding_agent.svg]", "count": 1, "sample_message": "Timeout(15s): Failed: Find ActionButtonUi[xpath=//div[@myicon='coding_agent.svg']]" }
+        ],
+        "sample_errors": [
+          "Timeout(5s): Failed: Find UiComponent[xpath=//div[@class='ContentTabLabel' and contains(@text, 'Copilot')]]",
+          "Timeout(15s): Failed: Find ActionButtonUi[xpath=//div[@myicon='coding_agent.svg']]"
+        ]
+      },
+      {
+        "category": "assertion_mismatch",
+        "display_name": "Assertion Mismatch",
+        "count": 3,
+        "pct": 25.0,
+        "subcategories": [
+          { "label": "Expected conflict hint in agent response, but got: Claude", "count": 3, "sample_message": "Expected conflict hint in agent response, but got: Claude Haiku 4.5..." }
+        ],
+        "sample_errors": [
+          "Expected conflict hint in agent response, but got: Claude Haiku 4.5..."
+        ]
+      }
+    ]
+  }
 }
 ```

@@ -12,6 +12,8 @@ Usage:
 Environment Variables:
     GITHUB_ACCESS_TOKEN or GITHUB_PAT: GitHub personal access token with repo and actions:read scopes
 """
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -21,7 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 
@@ -37,17 +39,21 @@ def get_token() -> str:
     return token
 
 
+def _github_api_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
 def github_get(url: str, token: str, params: dict | None = None) -> dict | list:
     """Perform a GitHub REST API GET request and return parsed JSON."""
     if params:
         url = url + "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(
         url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
+        headers=_github_api_headers(token),
     )
     for attempt in range(3):
         try:
@@ -65,7 +71,8 @@ def github_get(url: str, token: str, params: dict | None = None) -> dict | list:
                 token_len = len(token) if token else 0
                 print(f"Token length: {token_len}", file=sys.stderr)
             if exc.code == 429 or exc.code == 403:
-                wait = 60 * (attempt + 1)
+                retry_after = exc.headers.get("Retry-After")
+                wait = int(retry_after) if retry_after and retry_after.isdigit() else 60 * (attempt + 1)
                 print(f"Rate limited (HTTP {exc.code}), waiting {wait}s...", file=sys.stderr)
                 time.sleep(wait)
                 continue
@@ -86,7 +93,7 @@ def github_get_all_pages(base_url: str, token: str, params: dict | None = None, 
     while True:
         p["page"] = page
         data = github_get(base_url, token, params=p)
-        items = data if isinstance(data, list) else data.get("workflow_runs") or data.get("jobs") or data.get("workflows") or data.get("pull_requests") or []
+        items = data if isinstance(data, list) else data.get("workflow_runs") or data.get("jobs") or data.get("check_runs") or data.get("workflows") or data.get("pull_requests") or []
         if not items:
             break
         all_items.extend(items)
@@ -167,6 +174,356 @@ def fetch_jobs_for_run(owner: str, repo: str, run_id: int, attempt: int, token: 
     return data.get("jobs", [])
 
 
+
+# ---------------------------------------------------------------------------
+# Step 3b: Fetch and parse job logs for failure reasons
+# ---------------------------------------------------------------------------
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Raise immediately on any redirect so we can capture the Location header."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(newurl, code, msg, headers, fp)
+
+
+def fetch_job_log(owner: str, repo: str, job_id: int, token: str) -> str | None:
+    """Fetch the plain-text log for a job via the GitHub API redirect.
+
+    The logs endpoint issues a 302 to a pre-signed blob URL (S3/Azure).
+    That URL must be fetched *without* the Authorization header or the
+    cloud storage service will reject the request with 400/403.
+    Returns the decoded log text, or None if the log could not be fetched.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
+    req = urllib.request.Request(url, headers=_github_api_headers(token))
+    opener = urllib.request.build_opener(_NoRedirectHandler())
+    try:
+        with opener.open(req, timeout=30):
+            pass  # non-redirect response: no log content available at this URL
+    except urllib.error.HTTPError as exc:
+        if exc.code in (301, 302, 303, 307, 308):
+            redirect_url = exc.headers.get("Location")
+            if not redirect_url:
+                return None
+            try:
+                with urllib.request.urlopen(redirect_url, timeout=60) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except Exception as fetch_exc:
+                print(f"  Warning: could not fetch log blob for job {job_id}: {fetch_exc}", file=sys.stderr)
+                return None
+        print(f"  Warning: HTTP {exc.code} fetching log for job {job_id}", file=sys.stderr)
+    except Exception as exc:
+        print(f"  Warning: could not fetch log for job {job_id}: {exc}", file=sys.stderr)
+    return None
+
+
+_FAILED_LINE_RE = re.compile(r"(\w[\w$]*)\s*>\s*(.+?)\(\)\s+FAILED", re.MULTILINE)
+_EXCEPTION_LINE_RE = re.compile(r"^\s+([\w$][\w$.]*(?:Error|Exception|Failure))\b(.*)", re.MULTILINE)
+# GitHub Actions prepends a timestamp to every log line: "2026-03-05T05:46:43.000Z "
+# Strip these before applying regexes so that "^\s+" can match correctly.
+_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z ", re.MULTILINE)
+
+
+def extract_all_failure_reasons(log_text: str, test_class: str) -> list[dict]:
+    """Parse all FAILED blocks in a CI log for the given test_class.
+
+    A single job log can contain multiple FAILED blocks (one per failed test
+    method).  Returns a list with one dict per block — never None, may be empty.
+
+    Each dict has:
+        test_case         (str)       – e.g. "test copilot chat end to end"
+        exception_type    (str|None)  – e.g. "WaitForConditionTimeoutException"
+        exception_message (str|None)  – human-readable error description
+        error_category    (str)       – classified category
+        stack_function    (str|None)  – topmost copilot function in stack trace
+    """
+    if not log_text:
+        return []
+    log_text = _TIMESTAMP_RE.sub("", log_text)
+    _copilot_stack_re = re.compile(r"com\.github\.copilot[\w.]*\.(\w+)\(")
+    results = []
+    matches = list(_FAILED_LINE_RE.finditer(log_text))
+    for i, m in enumerate(matches):
+        if m.group(1) != test_class:
+            continue
+        test_case = m.group(2).strip()
+        block_start = m.end()
+        block_end = matches[i + 1].start() if i + 1 < len(matches) else block_start + 5000
+        block_text = log_text[block_start:block_end]
+
+        # Look for ----Driver Error---- marker in the block
+        driver_error_msg = None
+        driver_lines = block_text.splitlines()
+        for di, dline in enumerate(driver_lines):
+            if "----Driver Error----" in dline:
+                for dk in range(di + 1, min(di + 5, len(driver_lines))):
+                    candidate = driver_lines[dk].strip()
+                    if candidate and not candidate.startswith("---") and not candidate.startswith("at "):
+                        driver_error_msg = candidate
+                        break
+                break
+
+        # Extract stack function
+        stack_function = None
+        for dline in driver_lines:
+            m_stack = _copilot_stack_re.search(dline)
+            if m_stack:
+                stack_function = m_stack.group(1)
+                break
+
+        exceptions = _EXCEPTION_LINE_RE.findall(block_text)
+        if not exceptions:
+            error_category = classify_error_category(None, driver_error_msg, driver_error_msg)
+            results.append({
+                "test_case": test_case, "exception_type": None,
+                "exception_message": driver_error_msg,
+                "error_category": error_category, "stack_function": stack_function,
+            })
+            continue
+
+        # Prefer specific exception types over generic AssertionFailedError.
+        _generic = {"AssertionFailedError", "AssertionError", "AssertionFailure"}
+        specific = next((e for e in exceptions if e[0].split(".")[-1] not in _generic
+                         and e[0].split(".")[-1] != "DriverWithContextError"), None)
+        preferred = specific or next((e for e in exceptions if "AssertionFailed" in e[0]), exceptions[-1])
+        exc_type = preferred[0].split(".")[-1]
+        exc_msg = driver_error_msg or preferred[1].strip(" :\t")
+        error_category = classify_error_category(exc_type, exc_msg, driver_error_msg)
+        results.append({
+            "test_case": test_case,
+            "exception_type": exc_type,
+            "exception_message": exc_msg,
+            "error_category": error_category,
+            "stack_function": stack_function,
+        })
+    return results
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\?(\[[\d;]*[A-Za-z])")
+
+
+# ---------------------------------------------------------------------------
+# Error classification
+# ---------------------------------------------------------------------------
+
+_TIMEOUT_RE = re.compile(r"Exceeded timeout \(PT([^)]+)\)|Timeout\((\d+\w?)\)")
+_COMPONENT_RE = re.compile(r"Failed: Find (\w+(?:\[.*?\])?)")
+_ASSERTION_EXPECT_RE = re.compile(r"Expected .+? but (?:got|was)|expected: <.*?> but was: <")
+
+
+def classify_error_category(exc_type: str | None, exc_msg: str | None,
+                            raw_error: str | None) -> str:
+    """Classify an error into a root cause category.
+
+    Categories:
+      - timeout:             Exceeded timeout or Timeout(Xs) for condition functions
+      - component_not_found: Failed to find a UI component via xpath (includes component lookup timeouts)
+      - assertion_mismatch:  Expected X but got Y (logic / assertion failures)
+      - install_state:       Install/Details button state mismatch
+      - other:               Unclassified
+
+    Order matters: component_not_found is checked before timeout because
+    "Timeout(5s): Failed: Find UiComponent[...]" is a component issue, not a
+    general condition timeout.
+    """
+    msg = raw_error or exc_msg or ""
+
+    # Component not found: "Failed: Find UiComponent[xpath=...]" or "Timeout(Xs): Failed: Find..."
+    # Must be checked BEFORE timeout — "Timeout(5s): Failed: Find..." is a component issue.
+    if "Failed: Find" in msg:
+        return "component_not_found"
+    if exc_type and "ComponentLookup" in exc_type:
+        return "component_not_found"
+
+    # Timeout: "Exceeded timeout (PT30S)..." or "Timeout(5s):..." without "Failed: Find"
+    if _TIMEOUT_RE.search(msg):
+        return "timeout"
+    if exc_type and "Timeout" in exc_type:
+        return "timeout"
+
+    # Install button state mismatch
+    if "button text to be 'Install'" in msg or "expected: <Install>" in msg:
+        return "install_state"
+
+    # Assertion mismatch: "Expected X but got Y" or "expected: <X> but was: <Y>"
+    if _ASSERTION_EXPECT_RE.search(msg):
+        return "assertion_mismatch"
+
+    if exc_type and "Assertion" in exc_type:
+        return "assertion_mismatch"
+
+    return "other"
+
+
+_check_runs_cache: dict[str, list[dict] | None] = {}
+
+
+def fetch_annotations(owner: str, repo: str, sha: str, ide_type: str, ide_version: str,
+                      test_class: str, token: str) -> list[dict]:
+    """Fetch check-run annotations from the 'ui test report' check run for this combo.
+
+    The test framework publishes a separate check run named
+    'ui test report ({ide_type}, {ide_version}, {test_class})' which carries
+    per-test failure annotations. This is distinct from the job check run,
+    which only has a generic exit-code annotation.
+    Returns a list of annotation dicts, or [] if the check run is not found.
+    Uses a SHA-based cache to avoid redundant check-runs API calls.
+    """
+    target_name = f"ui test report ({ide_type}, {ide_version}, {test_class})"
+
+    # Cache check-runs per SHA to avoid redundant API calls
+    if sha in _check_runs_cache:
+        check_runs = _check_runs_cache[sha]
+    else:
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}/check-runs"
+        t0 = time.time()
+        try:
+            check_runs = github_get_all_pages(url, token, params={"per_page": 100})
+        except Exception as exc:
+            print(f"  Warning: could not list check-runs for {sha[:8]}: {exc}", file=sys.stderr)
+            check_runs = None
+        print(f"    check-runs for {sha[:8]}: {len(check_runs or [])} items, {time.time()-t0:.1f}s",
+              file=sys.stderr)
+        _check_runs_cache[sha] = check_runs
+
+    if not check_runs:
+        return []
+    cr = next((c for c in check_runs if c.get("name") == target_name), None)
+    if not cr:
+        return []
+    ann_url = f"https://api.github.com/repos/{owner}/{repo}/check-runs/{cr['id']}/annotations"
+    try:
+        return github_get_all_pages(ann_url, token)
+    except Exception as exc:
+        print(f"  Warning: could not fetch annotations for {target_name}: {exc}", file=sys.stderr)
+        return []
+
+
+def parse_annotations(annotations: list[dict]) -> list[dict]:
+    """Convert 'ui test report' check-run annotations into the same shape as
+    extract_all_failure_reasons.
+
+    Each failure annotation has:
+      title   – "ClassName.test method name()" → used as test_case
+      message – error text with ANSI escape codes, first non-empty class name is exception_type
+
+    DriverWithContextError is a wrapper whose message body contains the real inner
+    exception type and a human-readable description.  The layout after ANSI stripping is:
+        DriverWithContextError: <empty or junk>
+        ----Driver Error----
+        <human-readable message line(s)>
+        InnerExceptionType
+            at …stack…
+    We use the ----Driver Error---- marker to find the most informative error
+    description, then extract the specific inner exception type for classification.
+    """
+    # Wrapper types that carry no useful message of their own
+    _WRAPPER_TYPES = {"DriverWithContextError"}
+    # Generic assertion types whose inline message (e.g. "expected: <true> but was: <false>")
+    # is less informative than the ----Driver Error---- description line.
+    _GENERIC_ASSERTION_TYPES = {"AssertionFailedError", "AssertionError", "AssertionFailure",
+                                "AssertionFailedError:", "AssertionError:", "AssertionFailure:"}
+    _skip = re.compile(r"^-{3,}|^\s*at |^Caused by:|^Screenshot|^Driver doc")
+    _exc_re = re.compile(r"^([\w$][\w$.]*(?:Error|Exception|Failure))\b")
+    _DRIVER_ERROR_MARKER = "----Driver Error----"
+    _copilot_stack_re = re.compile(r"com\.github\.copilot[\w.]*\.(\w+)\(")
+
+    results = []
+    for ann in annotations:
+        if ann.get("annotation_level") != "failure":
+            continue
+        # Strip trailing "()" from title; strip class prefix "ClassName."
+        title = re.sub(r"\(\)$", "", (ann.get("title") or "").strip())
+        title = re.sub(r"^\w+\.", "", title)
+
+        message = _ANSI_RE.sub("", ann.get("message") or "")
+        lines = [l.strip() for l in message.splitlines() if l.strip()]
+
+        # --- Extract the ----Driver Error---- message (most informative line) ---
+        driver_error_msg = None
+        driver_error_idx = None
+        for idx, line in enumerate(lines):
+            if _DRIVER_ERROR_MARKER in line:
+                driver_error_idx = idx
+                # The first non-noise, non-exception line after the marker is the
+                # human-readable error description.
+                for k in range(idx + 1, len(lines)):
+                    candidate = lines[k]
+                    if _skip.match(candidate) or _exc_re.match(candidate):
+                        break
+                    driver_error_msg = candidate
+                    break
+                break
+
+        # --- Extract topmost com.github.copilot function from stack trace ---
+        stack_function = None
+        search_start = driver_error_idx + 1 if driver_error_idx is not None else 0
+        for line in lines[search_start:]:
+            m_stack = _copilot_stack_re.search(line)
+            if m_stack:
+                stack_function = m_stack.group(1)
+                break
+
+        # --- Collect all candidate exception lines (not stack / noise) ---
+        exc_lines = [
+            (j, l) for j, l in enumerate(lines)
+            if _exc_re.match(l) and not _skip.match(l)
+        ]
+
+        exc_type = exc_msg = None
+        if exc_lines:
+            def _simple_type(line: str) -> str:
+                return line.split(":")[0].strip().split(".")[-1]
+
+            # Prefer specific inner exception types (e.g. WaitForConditionTimeoutException,
+            # ComponentLookupException) over generic wrappers and assertion types, because
+            # the specific type reveals the actual root cause.
+            preferred = (
+                next((x for x in exc_lines
+                      if _simple_type(x[1]) not in _WRAPPER_TYPES
+                      and _simple_type(x[1]) not in _GENERIC_ASSERTION_TYPES), None)
+                or next((x for x in exc_lines if "AssertionFailed" in x[1]), None)
+                or next((x for x in exc_lines if _simple_type(x[1]) not in _WRAPPER_TYPES), None)
+                or exc_lines[0]
+            )
+            j, line = preferred
+            m = _exc_re.match(line)
+            exc_type = m.group(1).split(".")[-1]
+
+            # Always prefer the ----Driver Error---- message when available — it
+            # contains the actionable human-readable description (e.g. "Exceeded
+            # timeout (PT30S)…", "Failed: Find UiComponent[…]", "Expected conflict
+            # hint…").  The inline message of generic assertion types like
+            # "expected: <true> but was: <false>" is not useful for root cause analysis.
+            if driver_error_msg:
+                exc_msg = driver_error_msg
+            else:
+                # Fallback: inline message or backward search
+                inline = re.sub(r"^[\w$][\w$.]*(?:Error|Exception|Failure)[:\s]*", "", line).strip(" :\t")
+                if inline:
+                    exc_msg = inline
+                else:
+                    for k in range(j - 1, -1, -1):
+                        candidate = lines[k]
+                        if _skip.match(candidate) or _exc_re.match(candidate):
+                            continue
+                        if len(candidate.split()) < 2 and candidate.lower() in {"none", "null", "true", "false", ""}:
+                            continue
+                        exc_msg = candidate
+                        break
+
+        # --- Classify error category ---
+        error_category = classify_error_category(exc_type, exc_msg, driver_error_msg)
+
+        results.append({
+            "test_case":         title,
+            "exception_type":    exc_type,
+            "exception_message": exc_msg,
+            "error_category":    error_category,
+            "stack_function":    stack_function,
+        })
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Step 4: Fetch recent PRs for SHA cross-reference
 # ---------------------------------------------------------------------------
@@ -181,27 +538,27 @@ def _pr_info_from_api(data: dict) -> dict:
     }
 
 
-def fetch_recent_prs(owner: str, repo: str, token: str) -> dict:
-    """Return a dict mapping head_sha -> PR info.
+def build_sha_to_pr_from_runs(runs: list) -> dict:
+    """Build a sha -> PR info mapping directly from workflow run data.
 
-    Fetches up to 500 recently-updated PRs (open and closed) regardless of age,
-    so that older closed PRs whose SHAs appear in recent workflow runs are still
-    resolved to their title and author.
+    Each workflow run contains a pull_requests field with basic PR info.
+    This avoids the expensive bulk PR list fetch entirely.
     """
-    print("Fetching recent PRs for SHA cross-reference...", file=sys.stderr)
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
-    prs = github_get_all_pages(url, token, params={
-        "state": "all",
-        "sort": "updated",
-        "direction": "desc",
-        "per_page": 100,
-    }, max_items=500)
     sha_to_pr: dict = {}
-    for pr in prs:
-        sha = pr.get("head", {}).get("sha")
-        if sha:
-            sha_to_pr[sha] = _pr_info_from_api(pr)
-    print(f"  Found {len(sha_to_pr)} recent PR SHAs", file=sys.stderr)
+    for run in runs:
+        sha = run.get("head_sha", "")
+        if not sha or sha in sha_to_pr:
+            continue
+        prs = run.get("pull_requests") or []
+        if prs:
+            pr = prs[0]
+            fallback_url = pr.get("url", "").replace("api.github.com/repos", "github.com").replace("/pulls/", "/pull/")
+            sha_to_pr[sha] = {
+                "pr_number": pr.get("number"),
+                "pr_title": "",  # title not in run data; enriched later
+                "pr_url": fallback_url,
+                "pr_author": "",  # author not in run data; enriched later
+            }
     return sha_to_pr
 
 
@@ -295,6 +652,121 @@ def safe_score(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 4)
 
 
+_CATEGORY_DISPLAY = {
+    "timeout": "Exceeded Timeout",
+    "component_not_found": "UI Component Not Found",
+    "assertion_mismatch": "Assertion Mismatch",
+    "install_state": "Install Button State",
+    "other": "Other",
+}
+
+
+def _extract_timeout_detail(msg: str) -> str:
+    """Extract a human-readable timeout sub-label from the error message."""
+    m = _TIMEOUT_RE.search(msg or "")
+    timeout_val = (m.group(1) or m.group(2)) if m else None
+    return f"({timeout_val})" if timeout_val else ""
+
+
+def _extract_component_detail(msg: str) -> str:
+    """Extract a short component identifier from a 'Failed: Find' message."""
+    if not msg:
+        return "unknown"
+    m = re.search(r"Find (\w+)\[", msg)
+    component_type = m.group(1) if m else "unknown"
+    # Try to extract a recognizable attribute for display
+    attr_m = re.search(r"@(?:text|myicon|class|tooltiptext|name)='([^']+)'", msg)
+    attr = attr_m.group(1) if attr_m else ""
+    if attr:
+        return f"{component_type}[{attr}]"
+    return component_type
+
+
+def _build_root_cause_analysis(all_cases: list[dict]) -> dict:
+    """Build root cause analysis from all collected failure cases.
+
+    Groups failures by error_category, then builds subcategories within each:
+    - timeout: grouped by stack_function
+    - component_not_found: grouped by component identifier
+    - assertion_mismatch: grouped by assertion description
+    - other: grouped by exception_type
+    """
+    if not all_cases:
+        return {"total_failure_instances": 0, "categories": []}
+
+    # Group by category
+    by_category: dict = defaultdict(list)
+    for case in all_cases:
+        cat = case.get("error_category", "other")
+        by_category[cat].append(case)
+
+    categories = []
+    for cat in ["timeout", "component_not_found", "assertion_mismatch", "install_state", "other"]:
+        cases = by_category.get(cat, [])
+        if not cases:
+            continue
+
+        # Build subcategories based on category type
+        sub_groups: dict = defaultdict(list)
+        for c in cases:
+            msg = c.get("exception_message") or ""
+            if cat == "timeout":
+                fn = c.get("stack_function")
+                detail = _extract_timeout_detail(msg)
+                if fn:
+                    label = f"{fn} {detail}".strip()
+                else:
+                    # No copilot stack frame — use the message itself as label
+                    label = msg[:80].strip() if msg else "unknown timeout"
+            elif cat == "component_not_found":
+                label = _extract_component_detail(msg)
+            elif cat == "assertion_mismatch":
+                # Group by the first ~60 chars of the message to cluster similar assertions
+                label = msg[:60].strip() if msg else "unknown"
+            elif cat == "install_state":
+                label = msg[:60].strip() if msg else "unknown"
+            else:
+                label = c.get("exception_type") or "unknown"
+            sub_groups[label].append(c)
+
+        subcategories = sorted(
+            [
+                {
+                    "label": label,
+                    "count": len(sub_cases),
+                    "sample_message": next(
+                        (c["exception_message"] for c in sub_cases if c.get("exception_message")),
+                        None,
+                    ),
+                }
+                for label, sub_cases in sub_groups.items()
+            ],
+            key=lambda x: -x["count"],
+        )
+
+        sample_errors = list({
+            c["exception_message"] for c in cases
+            if c.get("exception_message")
+        })[:5]
+
+        categories.append({
+            "category": cat,
+            "display_name": _CATEGORY_DISPLAY.get(cat, cat),
+            "count": len(cases),
+            "pct": round(len(cases) / len(all_cases) * 100, 1),
+            "subcategories": subcategories,
+            "sample_errors": sample_errors,
+        })
+
+    # Sort by count descending
+    categories.sort(key=lambda x: -x["count"])
+
+    return {
+        "total_failure_instances": len(all_cases),
+        "categories": categories,
+    }
+
+
 def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token: str) -> dict:
     """
     Core aggregation: group runs by (head_sha, test_key), classify retry patterns,
@@ -349,6 +821,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                     "run_attempt": att,
                     "conclusion": job.get("conclusion") or (conclusion if att == attempt else "failure"),
                     "run_url": run_url,
+                    "job_id": job.get("id"),
                 })
                 parsed_any = True
 
@@ -382,6 +855,95 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         }
         if any(e["run_attempt"] > 1 for e in entries):
             total_retry_attempts += 1
+
+    # --- Fetch failure reasons for all failed jobs (step 3b) ---
+    # failure_cases: group_key -> list[dict] | None
+    #   None  = log could not be fetched
+    #   []    = log fetched but no matching FAILED block found
+    #   [...] = one dict per FAILED block: {test_case, exception_type, exception_message, error_category, stack_function}
+    # Fetch annotations for never_passed jobs (all), plus a sample of first-attempt
+    # failures from passed_after_retry jobs for root cause analysis coverage.
+    _MAX_ANNOTATION_FETCHES = 50  # total annotation fetch budget across all groups
+    _MAX_PR_SAMPLES = 3           # per (sha, test_class) for per-PR failed_cases
+
+    print("Collecting failed jobs for root cause analysis...", file=sys.stderr)
+    failure_cases: dict = {}
+    all_failure_cases: list = []   # flat list of all failure case dicts for root cause analysis
+    combo_counts: dict = defaultdict(int)   # tk -> never_passed group count
+    combo_cases: dict = defaultdict(list)   # tk -> flat list of all failure case dicts
+    _in_progress = (None, "in_progress", "queued", "waiting")
+
+    # Collect all groups that have failures (never_passed or failed first attempts)
+    failed_groups: list = []  # [(group_key, failed_entry, is_never_passed)]
+    for group_key, entries in groups.items():
+        status = classified[group_key]["status"]
+        sha, ide_type, ide_version, test_class = group_key
+        tk = (ide_type, ide_version, test_class)
+
+        if status == "never_passed":
+            combo_counts[tk] += 1
+            failed_entry = next(
+                (e for e in reversed(entries)
+                 if e.get("conclusion") not in ("success",) + _in_progress and e.get("job_id")),
+                None,
+            )
+            failed_groups.append((group_key, failed_entry, True))
+        elif status == "passed_after_retry":
+            # The first attempt failed — sample it for root cause analysis
+            first = entries[0] if entries else None
+            if first and first.get("conclusion") != "success" and first.get("job_id"):
+                failed_groups.append((group_key, first, False))
+
+    # Prioritize: never_passed first, then passed_after_retry
+    failed_groups.sort(key=lambda x: (0 if x[2] else 1))
+
+    print(f"Fetching failure annotations for {min(len(failed_groups), _MAX_ANNOTATION_FETCHES)} "
+          f"of {len(failed_groups)} failed groups...", file=sys.stderr)
+    fetch_count = 0
+    annotation_miss_count = 0
+    pr_samples: dict = defaultdict(int)
+    for group_key, failed_entry, is_never_passed in failed_groups:
+        sha, ide_type, ide_version, test_class = group_key
+        tk = (ide_type, ide_version, test_class)
+        pr_key = (sha, tk)
+
+        if fetch_count >= _MAX_ANNOTATION_FETCHES:
+            if is_never_passed:
+                failure_cases[group_key] = None
+            continue
+
+        if not failed_entry:
+            if is_never_passed:
+                failure_cases[group_key] = None
+            continue
+
+        # For per-PR display, cap samples per (sha, test_class)
+        want_pr = is_never_passed and pr_samples[pr_key] < _MAX_PR_SAMPLES
+
+        job_id = failed_entry["job_id"]
+        fetch_count += 1
+        cache_status = "cached" if sha in _check_runs_cache else "new"
+        print(f"  [{fetch_count}/{min(len(failed_groups), _MAX_ANNOTATION_FETCHES)}] "
+              f"{ide_type}/{ide_version}/{test_class} sha={sha[:8]} ({cache_status})",
+              file=sys.stderr)
+        annotations = fetch_annotations(owner, repo, sha, ide_type, ide_version, test_class, token)
+        parsed = parse_annotations(annotations)
+        if not parsed:
+            annotation_miss_count += 1
+            parsed = None
+
+        if is_never_passed:
+            failure_cases[group_key] = parsed
+        if parsed:
+            all_failure_cases.extend(parsed)
+            combo_cases[tk].extend(parsed)
+        if want_pr:
+            pr_samples[pr_key] += 1
+
+    miss_rate = (annotation_miss_count / fetch_count * 100) if fetch_count else 0
+    print(f"Annotation fetch complete: {fetch_count} fetched, {annotation_miss_count} missed "
+          f"({miss_rate:.0f}% miss rate), {len(_check_runs_cache)} unique SHAs cached",
+          file=sys.stderr)
 
     # --- Aggregate per test class ---
     # retry_counts[(ide_type, ide_version, test_class)][N] = count of instances that needed N retries to pass
@@ -574,6 +1136,9 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                     "test_class": tr["test_class"],
                     "attempts": tr["attempts"],
                     "latest_run_url": tr["latest_run_url"],
+                    "failed_cases": failure_cases.get(
+                        (pr["head_sha"], tr["ide_type"], tr["ide_version"], tr["test_class"])
+                    ),
                 }
                 for tr in pr["test_results"]
                 if tr["status"] == "never_passed"
@@ -586,12 +1151,44 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
                 "failed_tests": failed_tests,
             })
 
+    # --- Failure summary: worst (ide_type, ide_version, test_class) combo ---
+    # combo_counts and combo_cases were built during the log-fetching pass above.
+
+    failure_summary = None
+    if combo_counts:
+        worst_tk = max(combo_counts, key=lambda k: combo_counts[k])
+        w_ide_type, w_ide_version, w_test_class = worst_tk
+        all_cases = combo_cases[worst_tk]
+        exc_counts = Counter(c["exception_type"] for c in all_cases if c.get("exception_type"))
+        dominant_exc_type = exc_counts.most_common(1)[0][0] if exc_counts else None
+        msg_counts = Counter(
+            c["exception_message"] for c in all_cases
+            if c.get("exception_type") == dominant_exc_type and c.get("exception_message")
+        )
+        dominant_msg = msg_counts.most_common(1)[0][0] if msg_counts else None
+        failure_summary = {
+            "worst_combo": {
+                "ide_type": w_ide_type,
+                "ide_version": w_ide_version,
+                "test_class": w_test_class,
+                "never_passed_count": combo_counts[worst_tk],
+            },
+            "dominant_exception_type": dominant_exc_type,
+            "dominant_exception_message": dominant_msg,
+            "occurrence_count": exc_counts.get(dominant_exc_type, 0) if exc_counts else 0,
+        }
+
+    # --- Root cause analysis: group all failures by error category ---
+    root_cause_analysis = _build_root_cause_analysis(all_failure_cases)
+
     return {
         "aggregate": aggregate,
         "per_test_class": per_test_class,
         "per_pr": per_pr,
         "top_flaky_tests": top_flaky,
         "prs_with_persistent_failures": prs_with_failures,
+        "failure_summary": failure_summary,
+        "root_cause_analysis": root_cause_analysis,
     }
 
 
@@ -623,8 +1220,9 @@ def main() -> None:
     if not runs:
         print(f"Warning: No workflow runs found in the past {args.days} day(s).", file=sys.stderr)
 
-    # Step 3+4: Fetch PRs for cross-reference, then jobs per run (inside aggregate)
-    sha_to_pr = fetch_recent_prs(args.owner, args.repo, token)
+    # Step 3+4: Build PR cross-reference from run data, then jobs per run (inside aggregate)
+    sha_to_pr = build_sha_to_pr_from_runs(runs)
+    print(f"Extracted {len(sha_to_pr)} PR SHAs from workflow runs", file=sys.stderr)
 
     # Aggregate
     result = aggregate_results(runs, sha_to_pr, args.owner, args.repo, token)
@@ -648,7 +1246,13 @@ def main() -> None:
             "total_workflow_runs": len(runs),
             "total_prs_analyzed": len([p for p in result["per_pr"] if p["pr_number"] is not None]),
         },
-        **result,
+        "failure_summary": result["failure_summary"],
+        "root_cause_analysis": result["root_cause_analysis"],
+        "aggregate": result["aggregate"],
+        "per_test_class": result["per_test_class"],
+        "per_pr": result["per_pr"],
+        "top_flaky_tests": result["top_flaky_tests"],
+        "prs_with_persistent_failures": result["prs_with_persistent_failures"],
     }
 
     # Write output

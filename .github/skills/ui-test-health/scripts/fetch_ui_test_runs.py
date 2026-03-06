@@ -354,6 +354,9 @@ def classify_error_category(exc_type: str | None, exc_msg: str | None,
     return "other"
 
 
+_check_runs_cache: dict[str, list[dict] | None] = {}
+
+
 def fetch_annotations(owner: str, repo: str, sha: str, ide_type: str, ide_version: str,
                       test_class: str, token: str) -> list[dict]:
     """Fetch check-run annotations from the 'ui test report' check run for this combo.
@@ -363,13 +366,26 @@ def fetch_annotations(owner: str, repo: str, sha: str, ide_type: str, ide_versio
     per-test failure annotations. This is distinct from the job check run,
     which only has a generic exit-code annotation.
     Returns a list of annotation dicts, or [] if the check run is not found.
+    Uses a SHA-based cache to avoid redundant check-runs API calls.
     """
     target_name = f"ui test report ({ide_type}, {ide_version}, {test_class})"
-    url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}/check-runs"
-    try:
-        check_runs = github_get_all_pages(url, token, params={"per_page": 100})
-    except Exception as exc:
-        print(f"  Warning: could not list check-runs for {sha[:8]}: {exc}", file=sys.stderr)
+
+    # Cache check-runs per SHA to avoid redundant API calls
+    if sha in _check_runs_cache:
+        check_runs = _check_runs_cache[sha]
+    else:
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}/check-runs"
+        t0 = time.time()
+        try:
+            check_runs = github_get_all_pages(url, token, params={"per_page": 100})
+        except Exception as exc:
+            print(f"  Warning: could not list check-runs for {sha[:8]}: {exc}", file=sys.stderr)
+            check_runs = None
+        print(f"    check-runs for {sha[:8]}: {len(check_runs or [])} items, {time.time()-t0:.1f}s",
+              file=sys.stderr)
+        _check_runs_cache[sha] = check_runs
+
+    if not check_runs:
         return []
     cr = next((c for c in check_runs if c.get("name") == target_name), None)
     if not cr:
@@ -522,27 +538,27 @@ def _pr_info_from_api(data: dict) -> dict:
     }
 
 
-def fetch_recent_prs(owner: str, repo: str, token: str) -> dict:
-    """Return a dict mapping head_sha -> PR info.
+def build_sha_to_pr_from_runs(runs: list) -> dict:
+    """Build a sha -> PR info mapping directly from workflow run data.
 
-    Fetches up to 500 recently-updated PRs (open and closed) regardless of age,
-    so that older closed PRs whose SHAs appear in recent workflow runs are still
-    resolved to their title and author.
+    Each workflow run contains a pull_requests field with basic PR info.
+    This avoids the expensive bulk PR list fetch entirely.
     """
-    print("Fetching recent PRs for SHA cross-reference...", file=sys.stderr)
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
-    prs = github_get_all_pages(url, token, params={
-        "state": "all",
-        "sort": "updated",
-        "direction": "desc",
-        "per_page": 100,
-    }, max_items=500)
     sha_to_pr: dict = {}
-    for pr in prs:
-        sha = pr.get("head", {}).get("sha")
-        if sha:
-            sha_to_pr[sha] = _pr_info_from_api(pr)
-    print(f"  Found {len(sha_to_pr)} recent PR SHAs", file=sys.stderr)
+    for run in runs:
+        sha = run.get("head_sha", "")
+        if not sha or sha in sha_to_pr:
+            continue
+        prs = run.get("pull_requests") or []
+        if prs:
+            pr = prs[0]
+            fallback_url = pr.get("url", "").replace("api.github.com/repos", "github.com").replace("/pulls/", "/pull/")
+            sha_to_pr[sha] = {
+                "pr_number": pr.get("number"),
+                "pr_title": "",  # title not in run data; enriched later
+                "pr_url": fallback_url,
+                "pr_author": "",  # author not in run data; enriched later
+            }
     return sha_to_pr
 
 
@@ -880,6 +896,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     print(f"Fetching failure annotations for {min(len(failed_groups), _MAX_ANNOTATION_FETCHES)} "
           f"of {len(failed_groups)} failed groups...", file=sys.stderr)
     fetch_count = 0
+    annotation_miss_count = 0
     pr_samples: dict = defaultdict(int)
     for group_key, failed_entry, is_never_passed in failed_groups:
         sha, ide_type, ide_version, test_class = group_key
@@ -900,11 +917,16 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         want_pr = is_never_passed and pr_samples[pr_key] < _MAX_PR_SAMPLES
 
         job_id = failed_entry["job_id"]
+        fetch_count += 1
+        cache_status = "cached" if sha in _check_runs_cache else "new"
+        print(f"  [{fetch_count}/{min(len(failed_groups), _MAX_ANNOTATION_FETCHES)}] "
+              f"{ide_type}/{ide_version}/{test_class} sha={sha[:8]} ({cache_status})",
+              file=sys.stderr)
         annotations = fetch_annotations(owner, repo, sha, ide_type, ide_version, test_class, token)
         parsed = parse_annotations(annotations)
         if not parsed:
-            log_text = fetch_job_log(owner, repo, job_id, token)
-            parsed = extract_all_failure_reasons(log_text, test_class) if log_text is not None else None
+            annotation_miss_count += 1
+            parsed = None
 
         if is_never_passed:
             failure_cases[group_key] = parsed
@@ -913,7 +935,11 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
             combo_cases[tk].extend(parsed)
         if want_pr:
             pr_samples[pr_key] += 1
-        fetch_count += 1
+
+    miss_rate = (annotation_miss_count / fetch_count * 100) if fetch_count else 0
+    print(f"Annotation fetch complete: {fetch_count} fetched, {annotation_miss_count} missed "
+          f"({miss_rate:.0f}% miss rate), {len(_check_runs_cache)} unique SHAs cached",
+          file=sys.stderr)
 
     # --- Aggregate per test class ---
     # retry_counts[(ide_type, ide_version, test_class)][N] = count of instances that needed N retries to pass
@@ -1190,8 +1216,9 @@ def main() -> None:
     if not runs:
         print(f"Warning: No workflow runs found in the past {args.days} day(s).", file=sys.stderr)
 
-    # Step 3+4: Fetch PRs for cross-reference, then jobs per run (inside aggregate)
-    sha_to_pr = fetch_recent_prs(args.owner, args.repo, token)
+    # Step 3+4: Build PR cross-reference from run data, then jobs per run (inside aggregate)
+    sha_to_pr = build_sha_to_pr_from_runs(runs)
+    print(f"Extracted {len(sha_to_pr)} PR SHAs from workflow runs", file=sys.stderr)
 
     # Aggregate
     result = aggregate_results(runs, sha_to_pr, args.owner, args.repo, token)

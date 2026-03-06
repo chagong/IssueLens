@@ -77,22 +77,38 @@ def build_message(data: dict) -> str:
         label    = f"{combo['ide_type']} {combo['ide_version']} — {combo['test_class']}"
         exc_type = _short_type(summary.get("dominant_exception_type")) or "unknown"
         exc_msg  = _ANSI_RE.sub("", summary.get("dominant_exception_message") or "").strip()
+        # Suppress message if it's only punctuation / single characters (e.g. bare "?")
+        if exc_msg and not re.search(r"[A-Za-z0-9]{2,}", exc_msg):
+            exc_msg = ""
+        # Truncate long messages
+        if exc_msg and len(exc_msg) > 120:
+            exc_msg = exc_msg[:117] + "..."
         detail   = f"{exc_type} — {exc_msg}" if exc_msg else exc_type
 
-        # Collect latest_run_urls from all prs_with_persistent_failures entries
-        # that match the worst combo, deduplicated.
+        # Collect latest_run_urls only from entries where the dominant exception was seen.
+        _MAX_RUNS = 5
         run_urls = []
         seen = set()
         for pr in data.get("prs_with_persistent_failures", []):
             for ft in pr.get("failed_tests", []):
-                if (ft["ide_type"], ft["ide_version"], ft["test_class"]) == (
+                if (ft["ide_type"], ft["ide_version"], ft["test_class"]) != (
                     combo["ide_type"], combo["ide_version"], combo["test_class"]
                 ):
-                    url = ft.get("latest_run_url", "")
-                    if url and url not in seen:
-                        seen.add(url)
-                        run_id = url.rstrip("/").split("/")[-1]
-                        run_urls.append(f"[{run_id}]({url})")
+                    continue
+                # Only include if at least one failed_case matches the dominant exception type
+                dominant_raw = summary.get("dominant_exception_type") or ""
+                matched = any(
+                    (c.get("exception_type") or "").endswith(exc_type)
+                    or (c.get("exception_type") or "") == dominant_raw
+                    for c in (ft.get("failed_cases") or [])
+                )
+                if not matched:
+                    continue
+                url = ft.get("latest_run_url", "")
+                if url and url not in seen and len(run_urls) < _MAX_RUNS:
+                    seen.add(url)
+                    run_id = url.rstrip("/").split("/")[-1]
+                    run_urls.append(f"[{run_id}]({url})")
 
         lines += [
             "",

@@ -299,38 +299,69 @@ def parse_annotations(annotations: list[dict]) -> list[dict]:
     Each failure annotation has:
       title   – "ClassName.test method name()" → used as test_case
       message – error text with ANSI escape codes, first non-empty class name is exception_type
+
+    DriverWithContextError is a wrapper whose message body contains the real inner
+    exception type and a human-readable description.  The layout after ANSI stripping is:
+        DriverWithContextError: <empty or junk>
+        ----Driver Error----
+        <human-readable message line(s)>
+        InnerExceptionType
+            at …stack…
+    We skip the wrapper and extract the inner type + the descriptive line before it.
     """
+    # Wrapper types that carry no useful message of their own
+    _WRAPPER_TYPES = {"DriverWithContextError"}
+    _skip = re.compile(r"^-{3,}|^\s*at |^Caused by:|^Screenshot|^Driver doc")
+    _exc_re = re.compile(r"^([\w$][\w$.]*(?:Error|Exception|Failure))\b")
+
     results = []
     for ann in annotations:
         if ann.get("annotation_level") != "failure":
             continue
-        # Strip trailing "()" from title to get the plain test case name
+        # Strip trailing "()" from title; strip class prefix "ClassName."
         title = re.sub(r"\(\)$", "", (ann.get("title") or "").strip())
-        # Strip class prefix "ClassName." if present
         title = re.sub(r"^\w+\.", "", title)
+
         message = _ANSI_RE.sub("", ann.get("message") or "")
-        # Find first line that looks like an exception class name
-        exc_type = None
-        exc_msg  = None
         lines = [l.strip() for l in message.splitlines() if l.strip()]
-        _skip = re.compile(r"^-{3,}|^\s*at |^Caused by|^Screenshot|^Driver doc")
-        exc_lines = [(j, l) for j, l in enumerate(lines)
-                     if re.match(r"[\w$][\w$.]*(?:Error|Exception|Failure)\b", l)
-                     and not _skip.match(l)]
+
+        # Collect all candidate exception lines (not stack / noise)
+        exc_lines = [
+            (j, l) for j, l in enumerate(lines)
+            if _exc_re.match(l) and not _skip.match(l)
+        ]
+
+        exc_type = exc_msg = None
         if exc_lines:
-            # Prefer AssertionFailed* as root cause; otherwise take the first match
-            preferred = next((x for x in exc_lines if "AssertionFailed" in x[1]), exc_lines[0])
+            # Prefer AssertionFailed* (real assertion); otherwise prefer a non-wrapper type.
+            # Simple class name = last dotted segment before the first ":"
+            def _simple_type(line: str) -> str:
+                return line.split(":")[0].strip().split(".")[-1]
+
+            preferred = (
+                next((x for x in exc_lines if "AssertionFailed" in x[1]), None)
+                or next((x for x in exc_lines if _simple_type(x[1]) not in _WRAPPER_TYPES), None)
+                or exc_lines[0]
+            )
             j, line = preferred
-            m = re.match(r"([\w$][\w$.]*(?:Error|Exception|Failure))[::\s]?(.*)", line)
+            m = _exc_re.match(line)
             exc_type = m.group(1).split(".")[-1]
-            candidate = m.group(2).strip(" :\t")
-            if not candidate:
-                # Look for nearest non-decoration line before this one
+            # Inline message (text after "ExcType: ")
+            inline = re.sub(r"^[\w$][\w$.]*(?:Error|Exception|Failure)[:\s]*", "", line).strip(" :\t")
+            if inline:
+                exc_msg = inline
+            else:
+                # Look backwards for the nearest descriptive (non-noise, non-exception) line.
+                # Skip trivially short/meaningless tokens like "none", "null", single words.
                 for k in range(j - 1, -1, -1):
-                    if not _skip.match(lines[k]) and not re.match(r"[\w$][\w$.]*(?:Error|Exception|Failure)\b", lines[k]):
-                        candidate = lines[k]
-                        break
-            exc_msg = candidate or None
+                    candidate = lines[k]
+                    if _skip.match(candidate) or _exc_re.match(candidate):
+                        continue
+                    if len(candidate.split()) < 2 and candidate.lower() in {"none", "null", "true", "false", ""}:
+                        continue
+                    exc_msg = candidate
+                    break
+
         results.append({
             "test_case":         title,
             "exception_type":    exc_type,

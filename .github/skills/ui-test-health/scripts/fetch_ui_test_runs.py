@@ -711,9 +711,13 @@ def _build_root_cause_analysis(all_cases: list[dict]) -> dict:
         for c in cases:
             msg = c.get("exception_message") or ""
             if cat == "timeout":
-                fn = c.get("stack_function") or "unknown"
+                fn = c.get("stack_function")
                 detail = _extract_timeout_detail(msg)
-                label = f"{fn} {detail}".strip()
+                if fn:
+                    label = f"{fn} {detail}".strip()
+                else:
+                    # No copilot stack frame — use the message itself as label
+                    label = msg[:80].strip() if msg else "unknown timeout"
             elif cat == "component_not_found":
                 label = _extract_component_detail(msg)
             elif cat == "assertion_mismatch":

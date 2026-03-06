@@ -127,31 +127,18 @@ def build_message(data: dict) -> str:
         lines += [
             "",
             f"### 🔍 Root Cause Analysis ({total} failure instances)",
-            "",
-            "| Category | Count | % | Top Sub-cause |",
-            "|---|---|---|---|",
         ]
-        for cat in rca["categories"]:
-            top_sub = cat["subcategories"][0]["label"] if cat.get("subcategories") else "-"
-            # Truncate long sub-cause labels
-            if len(top_sub) > 50:
-                top_sub = top_sub[:47] + "..."
-            lines.append(
-                f"| {cat['display_name']} | {cat['count']} | {cat['pct']}% | {top_sub} |"
-            )
 
-        # Show subcategory breakdown for each non-trivial category
         for cat in rca["categories"]:
+            lines.append("")
+            lines.append(f"**{cat['display_name']}** — {cat['count']} ({cat['pct']}%)")
             subs = cat.get("subcategories", [])
-            if len(subs) <= 1:
-                continue
-            lines += ["", f"**{cat['display_name']}** breakdown:"]
             for sub in subs[:8]:  # cap at 8 subcategories
                 label = sub["label"]
-                lines.append(f"- **{label}**: {sub['count']}x")
+                lines.append(f"- {label}: **{sub['count']}x**")
                 sample = sub.get("sample_message", "")
                 if sample and sample != label:
-                    lines.append(f"  > {sample}")
+                    lines.append(f"  - `{sample}`")
 
     return "\n".join(lines)
 

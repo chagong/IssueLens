@@ -148,9 +148,10 @@ def build_message(data: dict) -> str:
             lines += ["", f"**{cat['display_name']}** breakdown:"]
             for sub in subs[:8]:  # cap at 8 subcategories
                 label = sub["label"]
-                if len(label) > 70:
-                    label = label[:67] + "..."
-                lines.append(f"- {label}: {sub['count']}x")
+                lines.append(f"- **{label}**: {sub['count']}x")
+                sample = sub.get("sample_message", "")
+                if sample and sample != label:
+                    lines.append(f"  > {sample}")
 
     return "\n".join(lines)
 

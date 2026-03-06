@@ -1,6 +1,7 @@
 """Build a personal Teams notification payload from the ui_test_health.json report."""
 import json
 import os
+import re
 
 
 def build_retry_dist_str(rdist: dict) -> str:
@@ -16,10 +17,20 @@ def build_retry_dist_str(rdist: dict) -> str:
     return ", ".join(parts)
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\?(\[[\d;]*[A-Za-z])")
+
+
+def _short_type(exc_type: str | None) -> str | None:
+    """Return the simple class name from a fully-qualified exception type."""
+    if not exc_type:
+        return None
+    return exc_type.split(".")[-1]
+
+
 def build_message(data: dict) -> str:
-    meta     = data["metadata"]
-    agg      = data["aggregate"]
-    per_tc   = data["per_test_class"]
+    meta   = data["metadata"]
+    agg    = data["aggregate"]
+    per_tc = data["per_test_class"]
 
     since = meta["since"][:10]
     until = meta["until"][:10]
@@ -36,32 +47,53 @@ def build_message(data: dict) -> str:
     lines = [
         f"## 📊 UI Test Health — Last 3 Days ({since} → {until})",
         "",
-        f"**PRs analyzed:** {prs} &nbsp;|&nbsp; **Runs:** {runs} &nbsp;|&nbsp; **Pass (any):** {pass_any}% &nbsp;|&nbsp; **First-attempt:** {pass_first}%",
-        f"**Re-runs:** {retried} &nbsp;|&nbsp; **Retry success:** {retry_succ}% &nbsp;|&nbsp; **Retry dist:** {retry_dist} &nbsp;|&nbsp; **Never-passed:** {never}%",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| PRs analyzed | {prs} |",
+        f"| Workflow runs | {runs} |",
+        f"| Pass rate (any attempt) | {pass_any}% |",
+        f"| First-attempt pass rate | {pass_first}% |",
+        f"| Never-passed rate | {never}% |",
+        f"| Re-runs triggered | {retried} |",
+        f"| Retry success rate | {retry_succ}% |",
+        f"| Retry distribution | {retry_dist} |",
         "",
         "### 🔬 Per-Test-Class",
         "",
-        "| IDE | Version | Test Class | First-Pass% | Any-Pass% | Flakiness |",
-        "|---|---|---|---|---|---|",
+        "| IDE | Version | Test Class | First-Pass% | Any-Pass% |",
+        "|---|---|---|---|---|",
     ]
 
     for tc in per_tc:
-        score = tc["flakiness_score"]
-        emoji = "🟢" if score < 0.15 else ("🟡" if score <= 0.35 else "🔴")
         lines.append(
             f"| {tc['ide_type']} | {tc['ide_version']} | {tc['test_class']}"
             f" | {tc['first_attempt_pass_rate_pct']}%"
-            f" | {tc['any_attempt_pass_rate_pct']}%"
-            f" | {emoji} {score} |"
+            f" | {tc['any_attempt_pass_rate_pct']}% |"
         )
 
     summary = data.get("failure_summary")
     if summary:
-        combo = summary["worst_combo"]
-        label = f"{combo['ide_type']} {combo['ide_version']} — {combo['test_class']}"
-        exc_type = summary.get("dominant_exception_type") or "unknown"
-        exc_msg  = summary.get("dominant_exception_message") or ""
+        combo    = summary["worst_combo"]
+        label    = f"{combo['ide_type']} {combo['ide_version']} — {combo['test_class']}"
+        exc_type = _short_type(summary.get("dominant_exception_type")) or "unknown"
+        exc_msg  = _ANSI_RE.sub("", summary.get("dominant_exception_message") or "").strip()
         detail   = f"{exc_type} — {exc_msg}" if exc_msg else exc_type
+
+        # Collect latest_run_urls from all prs_with_persistent_failures entries
+        # that match the worst combo, deduplicated.
+        run_urls = []
+        seen = set()
+        for pr in data.get("prs_with_persistent_failures", []):
+            for ft in pr.get("failed_tests", []):
+                if (ft["ide_type"], ft["ide_version"], ft["test_class"]) == (
+                    combo["ide_type"], combo["ide_version"], combo["test_class"]
+                ):
+                    url = ft.get("latest_run_url", "")
+                    if url and url not in seen:
+                        seen.add(url)
+                        run_id = url.rstrip("/").split("/")[-1]
+                        run_urls.append(f"[{run_id}]({url})")
+
         lines += [
             "",
             "### 💥 Failure Summary",
@@ -69,6 +101,8 @@ def build_message(data: dict) -> str:
             f"Worst offender: {label} ({combo['never_passed_count']} never-passed instance(s))",
             f"Dominant failure: {detail} ({summary['occurrence_count']} occurrence(s))",
         ]
+        if run_urls:
+            lines.append(f"Affected runs: {', '.join(run_urls)}")
 
     return "\n".join(lines)
 

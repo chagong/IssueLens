@@ -12,6 +12,8 @@ Usage:
 Environment Variables:
     GITHUB_ACCESS_TOKEN or GITHUB_PAT: GitHub personal access token with repo and actions:read scopes
 """
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -91,7 +93,7 @@ def github_get_all_pages(base_url: str, token: str, params: dict | None = None, 
     while True:
         p["page"] = page
         data = github_get(base_url, token, params=p)
-        items = data if isinstance(data, list) else data.get("workflow_runs") or data.get("jobs") or data.get("workflows") or data.get("pull_requests") or []
+        items = data if isinstance(data, list) else data.get("workflow_runs") or data.get("jobs") or data.get("check_runs") or data.get("workflows") or data.get("pull_requests") or []
         if not items:
             break
         all_items.extend(items)

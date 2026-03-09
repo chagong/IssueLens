@@ -969,7 +969,10 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     #   [...] = one dict per FAILED block: {test_case, exception_type, exception_message, error_category, stack_function}
     # Fetch annotations for never_passed jobs (all), plus a sample of first-attempt
     # failures from passed_after_retry jobs for root cause analysis coverage.
-    _MAX_ANNOTATION_FETCHES = 50  # total annotation fetch budget across all groups
+    # never_passed groups are always fully fetched (no cap) — the SHA-level check-runs
+    # cache means the real cost is one API call per unique SHA, not per group.
+    # passed_after_retry sampling is capped to avoid unnecessary extra calls.
+    _MAX_RETRY_ANNOTATION_FETCHES = 20  # cap only for passed_after_retry samples
     _MAX_PR_SAMPLES = 3           # per (sha, test_class) for per-PR failed_cases
 
     print("Collecting failed jobs for root cause analysis...", file=sys.stderr)
@@ -1003,20 +1006,21 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     # Prioritize: never_passed first, then passed_after_retry
     failed_groups.sort(key=lambda x: (0 if x[2] else 1))
 
-    print(f"Fetching failure annotations for {min(len(failed_groups), _MAX_ANNOTATION_FETCHES)} "
-          f"of {len(failed_groups)} failed groups...", file=sys.stderr)
+    never_passed_groups = [g for g in failed_groups if g[2]]
+    retry_groups = [g for g in failed_groups if not g[2]]
+    capped_retry_groups = retry_groups[:_MAX_RETRY_ANNOTATION_FETCHES]
+    groups_to_fetch = never_passed_groups + capped_retry_groups
+    print(f"Fetching failure annotations for {len(groups_to_fetch)} "
+          f"of {len(failed_groups)} failed groups "
+          f"({len(never_passed_groups)} never-passed + {len(capped_retry_groups)} retry samples)...",
+          file=sys.stderr)
     fetch_count = 0
     annotation_miss_count = 0
     pr_samples: dict = defaultdict(int)
-    for group_key, failed_entry, is_never_passed in failed_groups:
+    for group_key, failed_entry, is_never_passed in groups_to_fetch:
         sha, ide_type, ide_version, test_class = group_key
         tk = (ide_type, ide_version, test_class)
         pr_key = (sha, tk)
-
-        if fetch_count >= _MAX_ANNOTATION_FETCHES:
-            if is_never_passed:
-                failure_cases[group_key] = None
-            continue
 
         if not failed_entry:
             if is_never_passed:
@@ -1029,7 +1033,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         job_id = failed_entry["job_id"]
         fetch_count += 1
         cache_status = "cached" if sha in _check_runs_cache else "new"
-        print(f"  [{fetch_count}/{min(len(failed_groups), _MAX_ANNOTATION_FETCHES)}] "
+        print(f"  [{fetch_count}/{len(groups_to_fetch)}] "
               f"{ide_type}/{ide_version}/{test_class} sha={sha[:8]} ({cache_status})",
               file=sys.stderr)
         annotations = fetch_annotations(owner, repo, sha, ide_type, ide_version, test_class, token)

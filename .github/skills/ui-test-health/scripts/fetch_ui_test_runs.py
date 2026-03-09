@@ -870,7 +870,7 @@ def _build_error_type_groups(all_cases: list[dict]) -> list[dict]:
         })
 
     result.sort(key=lambda x: -x["count"])
-    return result
+    return result[:3]
 
 
 def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token: str) -> dict:

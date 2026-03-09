@@ -71,77 +71,37 @@ Always surface at the end of the report:
 
 Flakiness emoji: 🟢 < 0.15 (stable) · 🟡 0.15–0.35 (moderate) · 🔴 > 0.35 (high)
 
-### 🔁 Top Flaky Tests
+### � Root Cause Analysis
 
-_Only shown if `top_flaky_tests` is non-empty._
+_Only shown if `root_cause_analysis.error_types` is non-empty._
 
-For each entry, show the retry breakdown from `retry_distribution`:
-- `{ide_type} {ide_version} — {test_class}`: flakiness score **{flakiness_score}**, never passed **{never_passed}×**
-  - Retry breakdown: 1 retry: {retry_distribution["1"]}×, 2 retries: {retry_distribution["2"]}×, 3+ retries: {retry_distribution["3+"]}×
+Groups all failure instances by error pattern (test case + error type) to reveal systemic issues.
+Shows a compact summary table, then detail blocks for the top 3 error types.
 
-### 🚨 PRs with Persistent Failures
+**Summary table (up to 5 rows):**
 
-_Only shown if `prs_with_persistent_failures` is non-empty._
-
-For each PR:
-> **PR #{pr_number}** [{pr_title}]({pr_url}) · @{pr_author}
-> - ❌ `{ide_type} {ide_version} — {test_class}` failed on all {attempts} attempt(s) → [run]({latest_run_url})
->   - If `failed_cases` is a non-empty list, show each entry as a sub-bullet:
->     - `{test_case}`: `{exception_type}` — {exception_message}
->   - Omit the sub-bullets if `failed_cases` is null or empty
-
-### 💥 Failure Summary
-
-_Only shown if `failure_summary` is non-null._
-
-**Worst offender:** `{ide_type} {ide_version} — {test_class}` ({never_passed_count} never-passed instance(s))
-
-**Dominant failure:** `{dominant_exception_type}` ({occurrence_count} occurrence(s))
-
-**Detail:** {dominant_exception_message}
-
-### 🔍 Root Cause Analysis
-
-_Only shown if `root_cause_analysis.categories` is non-empty._
-
-Groups all failure instances by error pattern (not by test class) to reveal systemic issues.
-
-**Summary table:**
-
-| Category | Count | % | Top Sub-cause |
+| # | Failure Type | Count | % |
 |---|---|---|---|
-| {display_name} | {count} | {pct}% | {subcategories[0].label} |
+| 1 | {label} | {count} | {pct}% |
 
-**Error categories:**
+Labels are auto-generated from the error category and test case name:
+- `component_not_found` → "{component_attr} Not Found in {Humanized Test Case}"
+- `timeout` → "{stack_function} Timeout in {Humanized Test Case}" or "Condition Timeout in ..."
+- `assertion_mismatch` → "Assertion Mismatch in {Humanized Test Case}"
+- `install_state` → "Install Button State in {Humanized Test Case}"
 
-| Category | What it matches | Typical root cause |
-|---|---|---|
-| `timeout` | `Exceeded timeout (PTxx)`, `Timeout(Xs)` | Backend connectivity, feature not loading, insufficient timeout |
-| `component_not_found` | `Failed: Find UiComponent[xpath=...]` | UI refactoring changed class names/icons, plugin not loaded |
-| `assertion_mismatch` | `Expected X but got Y`, `expected: <X> but was: <Y>` | Logic bugs, response format changes |
-| `install_state` | `Expected button text to be 'Install'` | Plugin state issues |
-| `other` | Unclassified errors | Various |
+**Detail blocks (top 3 only, max 3 runs each):**
 
-**Subcategory breakdown:** For each category with >1 subcategory, show:
-- `{label}`: {count}x
-
-For `timeout` subcategories, the label includes the failing function name extracted from the
-`com.github.copilot` stack trace (e.g. `newSession (30S)`, `submitAndWaitForMessageSent (10S)`).
-
-For `component_not_found` subcategories, the label includes the component type and identifying
-attribute (e.g. `UiComponent[Copilot]`, `ActionButtonUi[coding_agent.svg]`).
-
-### 📈 Health Assessment
-
-Write a 3–5 sentence narrative covering:
-- Overall health verdict: **Healthy** (pass rate >= 90%, never-passed rate < 5%) / **Marginal** / **Unhealthy**
-- Which test class or IDE combo shows the most problems
-- Root cause distribution: highlight the dominant error category and whether it suggests infrastructure (timeouts spread across many PRs), UI refactoring (component_not_found), or logic bugs (assertion_mismatch isolated to specific tests)
-- Prioritized fix recommendations based on root cause categories (fix the highest-count category first)
-
----
-
-For full JSON schema and field definitions, see [references/json-schema.md](references/json-schema.md).
+> **Type {N}: {label} ({count} occurrences)**
+>
+> **Test:** `{test_case}()`
+> **Error:** `{error_message}`
+>
+> | # | Run | Suite |
+> |---|-----|-------|
+> | 1 | [run_{id}]({url}) | {ide_type}_{ide_version} |
+> | 2 | ... |
+> | 3 | ... |
 
 ## Notes
 

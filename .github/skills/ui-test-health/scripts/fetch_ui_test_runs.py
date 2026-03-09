@@ -767,6 +767,112 @@ def _build_root_cause_analysis(all_cases: list[dict]) -> dict:
     }
 
 
+def _humanize_test_case(test_case: str) -> str:
+    """Convert a test method name like 'test terminal feature' to 'Terminal Feature'."""
+    name = re.sub(r"^test\s+", "", test_case, flags=re.IGNORECASE).strip()
+    return name.title() if name else test_case
+
+
+def _generate_type_label(test_case: str, category: str, detail_key: str) -> str:
+    """Generate a human-readable error-type label.
+
+    Examples:
+      - "Copilot Tab Not Found in Terminal Feature"
+      - "Condition Timeout in Chat End to End"
+      - "Assertion Mismatch in Copilot Chat End to End"
+    """
+    human_test = _humanize_test_case(test_case)
+    if category == "component_not_found":
+        # detail_key looks like "UiComponent[ContentTabLabel]" or "ActionButtonUi[Send]"
+        # Extract the short attribute for a friendlier label
+        m = re.search(r"\[([^\]]+)\]", detail_key)
+        attr = m.group(1) if m else detail_key
+        return f"{attr} Not Found in {human_test}"
+    elif category == "timeout":
+        if detail_key and detail_key != "condition function":
+            return f"{detail_key} Timeout in {human_test}"
+        return f"Condition Timeout in {human_test}"
+    elif category == "assertion_mismatch":
+        return f"Assertion Mismatch in {human_test}"
+    elif category == "install_state":
+        return f"Install Button State in {human_test}"
+    return f"Error in {human_test}"
+
+
+def _build_error_type_groups(all_cases: list[dict]) -> list[dict]:
+    """Group failure cases into distinct error types for concise reporting.
+
+    Groups by (test_case, error_category, normalized_key) and generates a
+    human-readable label for each group. Each group includes deduplicated
+    affected runs with suite info.
+
+    Returns a list sorted by count descending, each dict:
+        label          – human-readable type label
+        count          – number of failure instances
+        test_case      – original test method name
+        error_message  – representative full error message
+        error_category – classified category
+        affected_runs  – [{run_id, run_url, suite}] deduplicated
+    """
+    if not all_cases:
+        return []
+
+    groups: dict = defaultdict(list)
+    for case in all_cases:
+        tc = case.get("test_case") or "unknown"
+        cat = case.get("error_category", "other")
+        msg = case.get("exception_message") or ""
+
+        if cat == "component_not_found":
+            nkey = _extract_component_detail(msg)
+        elif cat == "timeout":
+            fn = case.get("stack_function")
+            nkey = fn if fn else "condition function"
+        elif cat == "assertion_mismatch":
+            nkey = msg[:80].strip() if msg else "unknown"
+        elif cat == "install_state":
+            nkey = "install_state"
+        else:
+            nkey = case.get("exception_type") or "unknown"
+
+        groups[(tc, cat, nkey)].append(case)
+
+    result = []
+    for (tc, cat, nkey), cases in groups.items():
+        label = _generate_type_label(tc, cat, nkey)
+
+        # Pick the longest non-empty message as representative
+        messages = [c.get("exception_message") or "" for c in cases]
+        rep_msg = max(messages, key=len) if messages else ""
+        # Truncate very long messages for display
+        if len(rep_msg) > 200:
+            rep_msg = rep_msg[:197] + "..."
+
+        # Deduplicate affected runs by (run_url, suite)
+        seen_runs: set = set()
+        affected_runs = []
+        for c in cases:
+            url = c.get("_run_url", "")
+            suite = f"{c.get('_ide_type', '')}_{c.get('_ide_version', '')}"
+            if not url or (url, suite) in seen_runs:
+                continue
+            seen_runs.add((url, suite))
+            run_id = url.rstrip("/").split("/")[-1]
+            affected_runs.append({"run_id": run_id, "run_url": url, "suite": suite})
+
+        result.append({
+            "label": label,
+            "count": len(cases),
+            "test_case": tc,
+            "error_message": rep_msg,
+            "error_category": cat,
+            "affected_runs": affected_runs,
+        })
+
+    result.sort(key=lambda x: -x["count"])
+    return result[:3]
+
+
 def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token: str) -> dict:
     """
     Core aggregation: group runs by (head_sha, test_key), classify retry patterns,
@@ -863,7 +969,10 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     #   [...] = one dict per FAILED block: {test_case, exception_type, exception_message, error_category, stack_function}
     # Fetch annotations for never_passed jobs (all), plus a sample of first-attempt
     # failures from passed_after_retry jobs for root cause analysis coverage.
-    _MAX_ANNOTATION_FETCHES = 50  # total annotation fetch budget across all groups
+    # never_passed groups are always fully fetched (no cap) — the SHA-level check-runs
+    # cache means the real cost is one API call per unique SHA, not per group.
+    # passed_after_retry sampling is capped to avoid unnecessary extra calls.
+    _MAX_RETRY_ANNOTATION_FETCHES = 20  # cap only for passed_after_retry samples
     _MAX_PR_SAMPLES = 3           # per (sha, test_class) for per-PR failed_cases
 
     print("Collecting failed jobs for root cause analysis...", file=sys.stderr)
@@ -897,20 +1006,21 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
     # Prioritize: never_passed first, then passed_after_retry
     failed_groups.sort(key=lambda x: (0 if x[2] else 1))
 
-    print(f"Fetching failure annotations for {min(len(failed_groups), _MAX_ANNOTATION_FETCHES)} "
-          f"of {len(failed_groups)} failed groups...", file=sys.stderr)
+    never_passed_groups = [g for g in failed_groups if g[2]]
+    retry_groups = [g for g in failed_groups if not g[2]]
+    capped_retry_groups = retry_groups[:_MAX_RETRY_ANNOTATION_FETCHES]
+    groups_to_fetch = never_passed_groups + capped_retry_groups
+    print(f"Fetching failure annotations for {len(groups_to_fetch)} "
+          f"of {len(failed_groups)} failed groups "
+          f"({len(never_passed_groups)} never-passed + {len(capped_retry_groups)} retry samples)...",
+          file=sys.stderr)
     fetch_count = 0
     annotation_miss_count = 0
     pr_samples: dict = defaultdict(int)
-    for group_key, failed_entry, is_never_passed in failed_groups:
+    for group_key, failed_entry, is_never_passed in groups_to_fetch:
         sha, ide_type, ide_version, test_class = group_key
         tk = (ide_type, ide_version, test_class)
         pr_key = (sha, tk)
-
-        if fetch_count >= _MAX_ANNOTATION_FETCHES:
-            if is_never_passed:
-                failure_cases[group_key] = None
-            continue
 
         if not failed_entry:
             if is_never_passed:
@@ -923,7 +1033,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         job_id = failed_entry["job_id"]
         fetch_count += 1
         cache_status = "cached" if sha in _check_runs_cache else "new"
-        print(f"  [{fetch_count}/{min(len(failed_groups), _MAX_ANNOTATION_FETCHES)}] "
+        print(f"  [{fetch_count}/{len(groups_to_fetch)}] "
               f"{ide_type}/{ide_version}/{test_class} sha={sha[:8]} ({cache_status})",
               file=sys.stderr)
         annotations = fetch_annotations(owner, repo, sha, ide_type, ide_version, test_class, token)
@@ -935,6 +1045,12 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
         if is_never_passed:
             failure_cases[group_key] = parsed
         if parsed:
+            # Stamp each case with run metadata for error-type grouping
+            run_url = failed_entry.get("run_url", "")
+            for case in parsed:
+                case["_run_url"] = run_url
+                case["_ide_type"] = ide_type
+                case["_ide_version"] = ide_version
             all_failure_cases.extend(parsed)
             combo_cases[tk].extend(parsed)
         if want_pr:
@@ -1180,6 +1296,7 @@ def aggregate_results(runs: list, sha_to_pr: dict, owner: str, repo: str, token:
 
     # --- Root cause analysis: group all failures by error category ---
     root_cause_analysis = _build_root_cause_analysis(all_failure_cases)
+    root_cause_analysis["error_types"] = _build_error_type_groups(all_failure_cases)
 
     return {
         "aggregate": aggregate,

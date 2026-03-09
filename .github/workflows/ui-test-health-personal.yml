@@ -57,5 +57,5 @@ jobs:
         if: ${{ github.event_name == 'schedule' || inputs.enable_notification == true }}
         uses: ./.github/actions/notification
         with:
-          url: ${{ secrets.NOTIFICATION_URL_JETBRAINS }}
+          url: ${{ secrets.NOTIFICATION_URL_NLIU }}
           payload: ${{ steps.payload.outputs.payload }}

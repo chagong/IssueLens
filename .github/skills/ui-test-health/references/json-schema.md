@@ -230,6 +230,32 @@
             }
           }
         }
+      },
+      "error_types": {
+        "type": "array",
+        "description": "Failure instances grouped by (test_case, error_category, normalized_key) with human-readable labels and affected run links. Sorted by count descending. Used by the notification to render concise top-error-type detail blocks.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "label":          { "type": "string", "description": "Auto-generated human-readable label, e.g. 'Copilot Tab Not Found in Terminal Feature'" },
+            "count":          { "type": "integer", "description": "Number of failure instances in this group" },
+            "test_case":      { "type": "string", "description": "Original test method name, e.g. 'test terminal feature'" },
+            "error_message":  { "type": ["string", "null"], "description": "Representative full error message (longest from the group, truncated to 200 chars)" },
+            "error_category": { "type": "string", "enum": ["timeout", "component_not_found", "assertion_mismatch", "install_state", "other"] },
+            "affected_runs":  {
+              "type": "array",
+              "description": "Deduplicated list of affected CI runs with suite info",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "run_id":  { "type": "string", "description": "GitHub Actions run ID" },
+                  "run_url": { "type": "string", "description": "Full URL to the workflow run" },
+                  "suite":   { "type": "string", "description": "IDE type and version, e.g. 'IC_2025.2'" }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -252,7 +278,8 @@
 | `error_category` | Classified root cause category. `timeout` = exceeded timeout / condition wait. `component_not_found` = UI element not found via xpath. `assertion_mismatch` = expected vs actual value mismatch. `install_state` = install button state wrong. `other` = unclassified. |
 | `stack_function` | Topmost `com.github.copilot` function in the stack trace. Identifies which test step function caused a timeout (e.g. `newSession`, `submitAndWaitForMessageSent`, `verifyInlineCodeReviewComponentIsShowing`). `null` when no copilot stack frame found. |
 | `failure_summary` | Top-level object identifying the worst `(ide_type, ide_version, test_class)` combo by `never_passed` count, with the dominant `exception_type` and a representative message across all its failed cases. `null` when there are no `never_passed` entries. |
-| `root_cause_analysis` | Groups all failure instances by error pattern (not by test class). Categories are sorted by count descending. Subcategories within each category provide fine-grained breakdown (e.g. which function timed out, which component wasn't found). Covers both `never_passed` and first-attempt failures from `passed_after_retry` groups. |
+| `root_cause_analysis` | Groups all failure instances by error pattern (not by test class). `categories` are sorted by count descending with subcategory breakdowns. `error_types` groups by (test_case, error_category, normalized_key) with human-readable labels and affected run links for notification rendering. Covers both `never_passed` and first-attempt failures from `passed_after_retry` groups. |
+| `error_types` | Array within `root_cause_analysis`. Each entry represents a distinct error pattern grouped by test case and error type. Includes auto-generated label (e.g. "Copilot Tab Not Found in Terminal Feature"), occurrence count, representative error message, and deduplicated affected runs with suite info (`IC_2025.2`, `PY_2025.1`, etc.). Used by `build_notification_payload.py` to render concise top-3 error type detail blocks. |
 
 ## Example Output
 
@@ -474,6 +501,40 @@
         ],
         "sample_errors": [
           "Expected conflict hint in agent response, but got: Claude Haiku 4.5..."
+        ]
+      }
+    ],
+    "error_types": [
+      {
+        "label": "Copilot Not Found in Terminal Feature",
+        "count": 3,
+        "test_case": "test terminal feature",
+        "error_message": "Timeout(5s): Failed: Find UiComponent[xpath=//div[@class='ContentTabLabel' and contains(@text, 'Copilot')]]",
+        "error_category": "component_not_found",
+        "affected_runs": [
+          { "run_id": "14200001", "run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14200001", "suite": "IC_2025.2" },
+          { "run_id": "14200045", "run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14200045", "suite": "PY_2025.1" }
+        ]
+      },
+      {
+        "label": "Assertion Mismatch in Copilot Chat End To End",
+        "count": 3,
+        "test_case": "test copilot chat end to end",
+        "error_message": "Expected conflict hint in agent response, but got: Claude Haiku 4.5...",
+        "error_category": "assertion_mismatch",
+        "affected_runs": [
+          { "run_id": "14210099", "run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210099", "suite": "IC_2025.2" },
+          { "run_id": "14210088", "run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210088", "suite": "PY_2025.1" }
+        ]
+      },
+      {
+        "label": "newSession Timeout in Mcp Tool Invocation",
+        "count": 2,
+        "test_case": "test mcp tool invocation",
+        "error_message": "Exceeded timeout (PT30S) for condition function",
+        "error_category": "timeout",
+        "affected_runs": [
+          { "run_id": "14210099", "run_url": "https://github.com/microsoft/copilot-intellij/actions/runs/14210099", "suite": "IC_2025.2" }
         ]
       }
     ]

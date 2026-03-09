@@ -20,13 +20,6 @@ def build_retry_dist_str(rdist: dict) -> str:
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\?(\[[\d;]*[A-Za-z])")
 
 
-def _short_type(exc_type: str | None) -> str | None:
-    """Return the simple class name from a fully-qualified exception type."""
-    if not exc_type:
-        return None
-    return exc_type.split(".")[-1]
-
-
 def build_message(data: dict) -> str:
     meta   = data["metadata"]
     agg    = data["aggregate"]
@@ -71,86 +64,53 @@ def build_message(data: dict) -> str:
             f" | {tc['any_attempt_pass_rate_pct']}% |"
         )
 
-    summary = data.get("failure_summary")
-    if summary:
-        combo    = summary["worst_combo"]
-        label    = f"{combo['ide_type']} {combo['ide_version']} — {combo['test_class']}"
-        exc_type = _short_type(summary.get("dominant_exception_type")) or "unknown"
-        exc_msg  = _ANSI_RE.sub("", summary.get("dominant_exception_message") or "").strip()
-        # Suppress message if it's only punctuation / single characters (e.g. bare "?")
-        if exc_msg and not re.search(r"[A-Za-z0-9]{2,}", exc_msg):
-            exc_msg = ""
-        # Truncate long messages
-        if exc_msg and len(exc_msg) > 120:
-            exc_msg = exc_msg[:117] + "..."
-        detail   = f"{exc_type} — {exc_msg}" if exc_msg else exc_type
-
-        # Collect latest_run_urls only from entries where the dominant exception was seen.
-        _MAX_RUNS = 5
-        run_urls = []
-        seen = set()
-        for pr in data.get("prs_with_persistent_failures", []):
-            for ft in pr.get("failed_tests", []):
-                if (ft["ide_type"], ft["ide_version"], ft["test_class"]) != (
-                    combo["ide_type"], combo["ide_version"], combo["test_class"]
-                ):
-                    continue
-                # Only include if at least one failed_case matches the dominant exception type
-                dominant_raw = summary.get("dominant_exception_type") or ""
-                matched = any(
-                    (c.get("exception_type") or "").endswith(exc_type)
-                    or (c.get("exception_type") or "") == dominant_raw
-                    for c in (ft.get("failed_cases") or [])
-                )
-                if not matched:
-                    continue
-                url = ft.get("latest_run_url", "")
-                if url and url not in seen and len(run_urls) < _MAX_RUNS:
-                    seen.add(url)
-                    run_id = url.rstrip("/").split("/")[-1]
-                    run_urls.append(f"[{run_id}]({url})")
-
-        lines += [
-            "",
-            "### 💥 Failure Summary",
-            "",
-            f"Worst offender: {label} ({combo['never_passed_count']} never-passed instance(s))",
-            f"Dominant failure: {detail} ({summary['occurrence_count']} occurrence(s))",
-        ]
-        if run_urls:
-            lines.append(f"Affected runs: {', '.join(run_urls)}")
-
-    # --- Root Cause Analysis ---
+    # --- Root Cause Analysis (grouped error types) ---
     rca = data.get("root_cause_analysis")
-    if rca and rca.get("categories"):
+    error_types = rca.get("error_types", []) if rca else []
+    if error_types:
         total = rca.get("total_failure_instances", 0)
         lines += [
             "",
             f"### 🔍 Root Cause Analysis ({total} failure instances)",
             "",
-            "| Category | Count | % | Top Sub-cause |",
+            "| # | Failure Type | Count | % |",
             "|---|---|---|---|",
         ]
-        for cat in rca["categories"]:
-            top_sub = cat["subcategories"][0]["label"] if cat.get("subcategories") else "-"
-            # Truncate long sub-cause labels
-            if len(top_sub) > 50:
-                top_sub = top_sub[:47] + "..."
-            lines.append(
-                f"| {cat['display_name']} | {cat['count']} | {cat['pct']}% | {top_sub} |"
-            )
+        for i, et in enumerate(error_types[:8], 1):
+            pct = round(et["count"] / total * 100, 1) if total else 0
+            label = et["label"]
+            if len(label) > 60:
+                label = label[:57] + "..."
+            lines.append(f"| {i} | {label} | {et['count']} | {pct}% |")
 
-        # Show subcategory breakdown for each non-trivial category
-        for cat in rca["categories"]:
-            subs = cat.get("subcategories", [])
-            if len(subs) <= 1:
-                continue
-            lines += ["", f"**{cat['display_name']}** breakdown:"]
-            for sub in subs[:8]:  # cap at 8 subcategories
-                label = sub["label"]
-                if len(label) > 70:
-                    label = label[:67] + "..."
-                lines.append(f"- {label}: {sub['count']}x")
+        # Show detail for top 3 error types
+        _MAX_DETAIL_TYPES = 3
+        _MAX_RUNS_PER_TYPE = 3
+        for i, et in enumerate(error_types[:_MAX_DETAIL_TYPES], 1):
+            tc = et["test_case"]
+            err_msg = _ANSI_RE.sub("", et.get("error_message") or "").strip()
+            if err_msg and len(err_msg) > 150:
+                err_msg = err_msg[:147] + "..."
+            runs_list = et.get("affected_runs", [])[:_MAX_RUNS_PER_TYPE]
+
+            lines += [
+                "",
+                f"**Type {i}: {et['label']} ({et['count']} occurrences)**",
+                "",
+                f"**Test:** `{tc}()`",
+            ]
+            if err_msg:
+                lines.append(f"**Error:** `{err_msg}`")
+            if runs_list:
+                lines += [
+                    "",
+                    "| # | Run | Suite |",
+                    "|---|-----|-------|",
+                ]
+                for j, run in enumerate(runs_list, 1):
+                    lines.append(
+                        f"| {j} | [run_{run['run_id']}]({run['run_url']}) | {run['suite']} |"
+                    )
 
     return "\n".join(lines)
 
@@ -173,7 +133,7 @@ def main() -> None:
         "title": f"UI Test Health Report — {since} to {until}",
         "message": build_message(data),
         "workflowRunUrl": run_url,
-        "recipient": os.environ.get("RECIPIENT_JETBRAINS", "")
+        "recipient": "nliu@microsoft.com"
     }
 
     compact = json.dumps(payload)

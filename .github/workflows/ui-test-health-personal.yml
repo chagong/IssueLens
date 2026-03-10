@@ -52,6 +52,8 @@ jobs:
       - name: Build Notification Payload
         id: payload
         run: python .github/skills/ui-test-health/scripts/build_notification_payload.py
+        env:
+          RECIPIENT_JETBRAINS: ${{ secrets.RECIPIENT_JETBRAINS }}
 
       - name: Trigger Notification
         if: ${{ github.event_name == 'schedule' || inputs.enable_notification == true }}

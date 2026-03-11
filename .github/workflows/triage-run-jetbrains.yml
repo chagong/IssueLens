@@ -89,6 +89,8 @@ jobs:
           4. Send a summary email of the triage operation using the 'send-email' skill.
              - Send to email addresses specified in the 'REPORT_RECIPIENTS' environment variable.
              - Include counts: total issues triaged, SLA good, SLA warning, SLA violation.
+             - Include views: counts summary, top assigness with SLA violations, and top 20 oldest issues with SLA violations.
+             - Include a link to the workflow run for details.
 
           ### Skill Usage
           - Label issues using the 'label-issue' skill.

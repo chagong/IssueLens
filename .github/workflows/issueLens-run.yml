@@ -48,7 +48,7 @@ jobs:
           - microsoft/build-server-for-gradle
           - microsoft/vscode-java-dependency 
           - microsoft/vscode-maven
-          - microsoft/vscode-sprint-boot-dashboard
+          - microsoft/vscode-spring-boot-dashboard
           
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Running IssueLens with prompt: $prompt"

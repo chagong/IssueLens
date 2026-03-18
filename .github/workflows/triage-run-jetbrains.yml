@@ -56,7 +56,9 @@ jobs:
           ### Phase 1: Fetch and Triage Issues (batch processing)
           1. Fetch all matching open issues from each target repository.
           2. Process issues in batches (up to 30 at a time).
-          3. For each issue, perform labeling and SLA check.
+          3. For each batch, perform labeling and SLA check.
+             - Dispatch label and SLA sub-agents in matching batch sizes (max 30 issues per sub-agent).
+             - Do NOT send all issues to a single SLA sub-agent. Split SLA checks into the same batches as labeling.
           4. After each batch, append the triage results to a local JSON file `triage-results.json` using the following schema:
              ```json
              [
@@ -96,11 +98,28 @@ jobs:
           - Label issues using the 'label-issue' skill.
           - Check SLA compliance using the 'check-sla' skill.
 
+          ## CRITICAL: Shell Command Safety Rules
+          The Copilot CLI shell tool blocks commands that look like dangerous shell expansion.
+          You MUST follow these rules for ALL shell commands:
+
+          1. **NEVER use `$(...)` command substitution** inside echo or other commands.
+             - BAD:  `echo "Total: $(jq length file.json)"`
+             - GOOD: `jq length file.json`
+          2. **NEVER use jq string interpolation `\(...)` inside shell strings**.
+             - BAD:  `jq '.[] | .url = "https://example.com/\(.number)"'`
+             - GOOD: `jq '.[] | .url = ("https://example.com/" + (.number | tostring))'`
+          3. **NEVER use heredocs (`<< EOF`) to write large data**. Use the file creation tool instead.
+          4. **Prefer Python scripts over complex jq pipelines** for data transformation.
+             Write a short inline Python script and execute it with `python3 script.py` instead of chaining jq commands.
+          5. **Keep shell commands simple** — one operation per command when possible.
+
           ## Notes
           - Use 'gh' CLI if you encounter issues with MCP tools.
           - Always persist intermediate results to `triage-results.json` so nothing is lost between batches.
           - Initialize `triage-results.json` with `echo '[]' > triage-results.json` before starting.
-          - Use `jq` to merge batch results: `jq -s 'add' triage-results.json batch.json > tmp.json && mv tmp.json triage-results.json`
+          - Use `jq -s 'add' triage-results.json batch.json > tmp.json && mv tmp.json triage-results.json` to merge batch results.
+          - Minimize exploratory commands. Do not inspect JSON structure repeatedly — assume standard GitHub API shapes.
+          - Avoid fetching more data than needed. Use date filters in queries to reduce issue count.
           INSTRUCTIONS
 
           # Define workflow URL

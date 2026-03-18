@@ -10,8 +10,8 @@ Issues with these labels are exempt from SLA checks because they are waiting on 
 
 | Label | Description |
 |-------|-------------|
-| `need more info` | Waiting for reporter to provide additional information |
-| `need log` | Waiting for reporter to provide logs or diagnostic data |
+| `needs more info` | Waiting for reporter to provide additional information |
+| `needs log` | Waiting for reporter to provide logs or diagnostic data |
 
 ### Required Conditions (for non-exempt issues)
 
@@ -31,7 +31,7 @@ For issues that are not exempt, **all** of these conditions must be met:
                   │
                   ▼
 ┌─────────────────────────────────────┐
-│ Has "need more info" or "need log"? │
+│ Has "needs more info" or "needs log"? │
 └─────────────────┬───────────────────┘
                   │
          ┌───────┴───────┐
@@ -39,13 +39,13 @@ For issues that are not exempt, **all** of these conditions must be met:
          ▼               ▼
 ┌─────────────┐  ┌─────────────────────┐
 │ SLA: GOOD   │  │ Check parent link   │
-│ (Exempt)    │  │ and "need attention"│
+│ (Exempt)    │  │ and "needs attention"│
 └─────────────┘  └─────────┬───────────┘
                            │
                   ┌────────┴────────┐
                   │                 │
          Parent exists AND     Otherwise
-         no "need attention"
+         no "needs attention"
                   │                 │
                   ▼                 ▼
            ┌───────────┐    ┌─────────────┐
@@ -55,11 +55,13 @@ For issues that are not exempt, **all** of these conditions must be met:
 
 ## Label Matching
 
-Labels should be matched case-insensitively. Common variations to check:
+Labels should be matched case-insensitively. The following variations within each group are **identical** and must be treated as the same label:
 
-- `need more info`, `needs more info`, `need-more-info`, `needs-more-info`
-- `need log`, `needs log`, `need-log`, `needs-log`
-- `need attention`, `needs attention`, `need-attention`, `needs-attention`
+- **"need more info"** group: `need more info`, `needs more info`, `need-more-info`, `needs-more-info`
+- **"need log"** group: `need log`, `needs log`, `need-log`, `needs-log`
+- **"need attention"** group: `need attention`, `needs attention`, `need-attention`, `needs-attention`
+
+When the SLA logic references a label (e.g., "has 'need more info' label"), match against **all variations** in that group.
 
 ## Parent Link Detection
 

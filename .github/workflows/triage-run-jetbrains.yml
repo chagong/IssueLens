@@ -54,8 +54,12 @@ jobs:
           There may be a large number of issues to triage. To avoid losing context:
 
           ### Phase 1: Fetch and Triage Issues (batch processing)
-          1. Fetch all matching open issues from each target repository.
-          2. Process issues in batches (up to 30 at a time). Remember to get the issue number, title, URL, assignees, labels, and days open for each issue.
+          1. Fetch all matching open issues using `gh` CLI (do NOT use MCP list_issues — it omits assignees):
+             ```bash
+             gh issue list --repo <owner>/<repo> --state open --limit 500 --json number,title,url,assignees,labels,createdAt --search "created:>=${since_date}" > /tmp/all_issues.json
+             ```
+             Extract each assignee's `login` field into a flat string array for the triage results.
+          2. Process issues in batches (up to 30 at a time).
           3. For each batch, perform labeling and SLA check.
              - Use the 'label-issue' skill and 'check-sla' skill for each batch (max 30 issues per batch).
              - Do NOT process all issues at once. Split labeling and SLA checks into matching batches.
@@ -156,5 +160,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: triage-output
-          path: triage-output.txt
+          path: |
+            triage-output.txt
+            triage-results.json
           retention-days: 30

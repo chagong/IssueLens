@@ -59,11 +59,11 @@ jobs:
              gh issue list --repo <owner>/<repo> --state open --limit 500 --json number,title,url,assignees,labels,createdAt --search "created:>=${since_date}" > /tmp/all_issues.json
              ```
              Extract each assignee's `login` field into a flat string array for the triage results.
-          2. Process issues in batches (up to 30 at a time).
+          2. Process issues in batches (up to 100 at a time).
           3. For each batch, perform labeling and SLA check.
              - Use the 'label-issue' skill and 'check-sla' skill for each batch (max 30 issues per batch).
              - Do NOT process all issues at once. Split labeling and SLA checks into matching batches.
-          4. After each batch, append the triage results to a local JSON file `triage-results.json` using the following schema:
+          4. After each batch, append the triage results to a local JSON file `triage-results.json` at the root folder using the following schema:
              ```json
              [
                {
@@ -103,8 +103,8 @@ jobs:
           - Check SLA compliance using the 'check-sla' skill.
 
           ## CRITICAL: Shell Command Safety Rules
-          The Copilot CLI shell tool blocks commands that look like dangerous shell expansion.
-          You MUST follow these rules for ALL shell commands:
+          The Copilot CLI shell tool WILL BLOCK commands that look like dangerous shell expansion.
+          Blocked commands cause the entire operation to fail. You MUST follow these rules for ALL shell commands:
 
           1. **NEVER use `$(...)` command substitution** inside echo or other commands.
              - BAD:  `echo "Total: $(jq length file.json)"`
@@ -112,7 +112,10 @@ jobs:
           2. **NEVER use jq string interpolation `\(...)` inside shell strings**.
              - BAD:  `jq '.[] | .url = "https://example.com/\(.number)"'`
              - GOOD: `jq '.[] | .url = ("https://example.com/" + (.number | tostring))'`
-          3. **NEVER use heredocs (`<< EOF`) to write large data**. Use the file creation tool instead.
+          3. **NEVER use heredocs (`<< EOF`, `<< 'EOF'`, `<< JSONEOF`, etc.) to write ANY data**.
+             - BAD:  `cat > file.json << 'EOF' ... EOF`
+             - GOOD: Use Python to write files: `python3 -c "import json; json.dump(data, open('file.json','w'))"`
+             - GOOD: Use the file creation tool if available.
           4. **Prefer Python scripts over complex jq pipelines** for data transformation.
              Write a short inline Python script and execute it with `python3 script.py` instead of chaining jq commands.
           5. **Keep shell commands simple** — one operation per command when possible.

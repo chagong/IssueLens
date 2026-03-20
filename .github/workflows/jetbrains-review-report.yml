@@ -23,16 +23,15 @@ jobs:
       - name: Generate and Send Review Report
         id: report
         run: |
-          prompt="Fetch all review data for the 'GitHub Copilot' JetBrains Marketplace plugin (ID: 17718) with full content (authors and comments). Then generate an HTML email report and send it to the recipients in the REPORT_RECIPIENTS environment variable (comma-separated list of emails).
+          prompt="Fetch review data for the 'GitHub Copilot' JetBrains Marketplace plugin (ID: 17718) from the last 3 months (approximately 13 weeks) with full content (authors and comments). Then generate an HTML email report and send it to the recipients in the REPORT_RECIPIENTS environment variable (comma-separated list of emails).
 
           Include these charts:
           1. Rating Distribution
-          2. Average Rating by Year
-          3. Monthly Review Volume
-          4. Rolling 28-Day Average Rating Trend
-          5. Monthly Rating Breakdown (Stacked)
-          6. Rolling Average Rating (per-review)
-          7. Yearly Summary
+          2. Weekly Review Volume
+          3. Rolling 28-Day Average Rating Trend
+          4. Weekly Rating Breakdown (Stacked)
+          5. Rolling Average Rating (per-review)
+          6. Monthly Summary
 
           Classify all review comments into these categories, and include category visualization charts (bar chart by volume, average rating by category, pie chart distribution) plus a summary table and a highlight table for 'Models Unavailable' showing up to 10 sample reviews:
 
@@ -46,9 +45,10 @@ jobs:
           - Praise & Positive
           - Code Suggestions Quality
           - Performance & Resource Usage
-          - General / Uncategorized
           - Pricing & Value
           - Authentication & Login
+          - Spam Comments (empty comments, comments that don't point to any real problems, bot-like comments, or meaningless text)
+          - General / Uncategorized
 
           Then create 28-day rolling average rating trend chart per below categories:
           - Freezes & Hangs

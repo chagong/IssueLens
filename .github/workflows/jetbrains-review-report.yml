@@ -25,7 +25,7 @@ jobs:
         run: |
           prompt="Fetch review data for the 'GitHub Copilot' JetBrains Marketplace plugin (ID: 17718) from the last 3 months (approximately 13 weeks) with full content (authors and comments). Then generate an HTML email report and send it to the recipients in the REPORT_RECIPIENTS environment variable (comma-separated list of emails).
 
-          Include these charts:
+          Include these charts (no need to add any other charts beyond these 6):
           1. Rating Distribution
           2. Weekly Review Volume
           3. Rolling 28-Day Average Rating Trend

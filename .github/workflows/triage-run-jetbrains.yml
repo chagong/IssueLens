@@ -53,35 +53,61 @@ jobs:
           ## Important: Context Management Strategy
           There may be a large number of issues to triage. To avoid losing context:
 
-          ### Phase 1: Fetch and Triage Issues (batch processing)
-          1. Fetch all matching open issues using `gh` CLI (do NOT use MCP list_issues — it omits assignees):
-             ```bash
-             gh issue list --repo <owner>/<repo> --state open --limit 500 --json number,title,url,assignees,labels,createdAt --search "created:>=${since_date}" > /tmp/all_issues.json
-             ```
-             Extract each assignee's `login` field into a flat string array for the triage results.
-          2. Process issues in batches (up to 100 at a time).
-          3. For each batch, perform labeling and SLA check.
-             - Use the 'label-issue' skill and 'check-sla' skill for each batch (max 30 issues per batch).
-             - Do NOT process all issues at once. Split labeling and SLA checks into matching batches.
-          4. After each batch, append the triage results to a local JSON file `triage-results.json` at the root folder using the following schema:
-             ```json
-             [
-               {
-                 "repo": "owner/repo",
-                 "issue_number": 123,
-                 "title": "Issue title",
-                 "url": "https://github.com/owner/repo/issues/123",
-                 "assignees": ["user1", "user2"],
-                 "labels": ["bug", "area:chat"],
-                 "labels_added": ["bug"],
-                 "sla_status": "GOOD | WARNING | VIOLATION",
-                 "sla_details": "Brief reason",
-                 "days_open": 5
-               }
-             ]
-             ```
-          5. Use `cat triage-results.json` to verify saved results before moving to the next batch.
-          6. Repeat until all issues are processed.
+          ### Phase 1: Fetch and Triage Issues
+          #### Step 1 — List issues
+          Fetch all matching open issues and save them to `triage-results.json`:
+          ```bash
+          gh issue list --repo <owner>/<repo> --state open --limit 500 \
+            --json number,title,url,assignees,labels,createdAt \
+            --search "created:>=${since_date}" > /tmp/raw_issues.json
+          ```
+          Then normalize into `triage-results.json` using Python (extract assignee logins, label names):
+          ```python
+          python3 -c "
+          import json, pathlib
+          raw = json.loads(pathlib.Path('/tmp/raw_issues.json').read_text())
+          out = [{
+              'repo': '<owner>/<repo>',
+              'issue_number': i['number'],
+              'title': i['title'],
+              'url': i['url'],
+              'assignees': [a['login'] for a in i.get('assignees', [])],
+              'labels': [l['name'] for l in i.get('labels', [])],
+              'createdAt': i['createdAt']
+          } for i in raw]
+          pathlib.Path('triage-results.json').write_text(json.dumps(out, indent=2))
+          print(f'Saved {len(out)} issues to triage-results.json')
+          "
+          ```
+
+          #### Step 2 — Label and check SLA for each issue
+          For each issue in `triage-results.json`:
+          1. **Label**: Apply the 'label-issue' skill to determine and add labels.
+          2. **Check SLA**: Apply the 'check-sla' skill to evaluate SLA compliance.
+          3. **Update `triage-results.json`**: Add these properties to each issue entry:
+             - `labels_added` — array of new labels applied by the label-issue skill
+             - `sla_status` — one of `"GOOD"`, `"WARNING"`, `"VIOLATION"`
+             - `sla_details` — brief reason for the SLA status
+             - `days_open` — number of days since issue was created
+
+          The final `triage-results.json` should contain entries matching this schema:
+          ```json
+          [
+            {
+              "repo": "owner/repo",
+              "issue_number": 123,
+              "title": "Issue title",
+              "url": "https://github.com/owner/repo/issues/123",
+              "assignees": ["user1", "user2"],
+              "labels": ["bug", "area:chat"],
+              "createdAt": "2026-01-15T10:00:00Z",
+              "labels_added": ["bug"],
+              "sla_status": "GOOD | WARNING | VIOLATION",
+              "sla_details": "Brief reason",
+              "days_open": 5
+            }
+          ]
+          ```
 
           ### Phase 2: Group and Summarize (read from file)
           After ALL issues are processed:
@@ -122,9 +148,6 @@ jobs:
 
           ## Notes
           - Use 'gh' CLI if you encounter issues with MCP tools.
-          - Always persist intermediate results to `triage-results.json` so nothing is lost between batches.
-          - Initialize `triage-results.json` with `echo '[]' > triage-results.json` before starting.
-          - Use `jq -s 'add' triage-results.json batch.json > tmp.json && mv tmp.json triage-results.json` to merge batch results.
           - Minimize exploratory commands. Do not inspect JSON structure repeatedly — assume standard GitHub API shapes.
           - Avoid fetching more data than needed. Use date filters in queries to reduce issue count.
           INSTRUCTIONS

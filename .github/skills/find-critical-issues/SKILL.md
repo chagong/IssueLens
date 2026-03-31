@@ -20,7 +20,7 @@ Triage GitHub issues and identify critical ones based on user impact and severit
 - 2+ similar issues from different users (same symptom/error pattern)
 - 2+ user reactions (👍) or comments
 - 3+ non-bot comments (exclude "github-action" automation)
-- skip maintainer's response or tag
+- Skip routine maintainer actions such as tagging or replying.
 
 ### Blocking Issues
 - Core product function broken with no workaround

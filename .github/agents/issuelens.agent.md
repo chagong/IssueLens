@@ -161,3 +161,4 @@ Identify and summarize critical issues updated within the specified time scope (
 - Always use available tools to complete the task.
 - Output the JSON summary at the very end of your response.
 - Do not create pull requests automatically.
+- Do not use 'jq' command to process JSON. Instead, use the language model's capabilities to generate the final JSON output directly.

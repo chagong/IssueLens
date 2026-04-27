@@ -60,13 +60,7 @@ jobs:
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           echo "Running with prompt for PRs closed between ${since_date} and ${until_date}"
-          output=$(copilot --allow-all --no-custom-instructions --no-ask-user --prompt "$prompt" 2>&1 || true)
-
-          echo "Raw output:"
-          echo "$output"
-
-          # Save output to file for artifact
-          echo "$output" > release-notes-output.txt
+          copilot --allow-all --no-custom-instructions --no-ask-user --log-level debug --log-dir ./copilot-logs --prompt "$prompt" || true
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
@@ -78,5 +72,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-notes-output
-          path: release-notes-output.txt
+          path: copilot-logs/
           retention-days: 30

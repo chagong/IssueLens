@@ -59,12 +59,7 @@ jobs:
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           echo "Running with prompt: $prompt"
-          output=$(copilot --allow-all --no-custom-instructions --no-ask-user --prompt "$prompt" 2>&1 || true)
-
-          echo "Raw output:"
-          echo "$output"
-
-          echo "$output" > report-output.txt
+          copilot --allow-all --no-custom-instructions --no-ask-user --log-level debug --log-dir ./copilot-logs --prompt "$prompt" || true
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
@@ -76,5 +71,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: report-output
-          path: report-output.txt
+          path: copilot-logs/
           retention-days: 30

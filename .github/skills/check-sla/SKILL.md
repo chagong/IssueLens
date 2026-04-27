@@ -41,7 +41,7 @@ When no repository-specific SLA is defined, apply these criteria:
 - Issue has "need log" label
 
 **Otherwise, the issue MUST meet ALL of these conditions to be SLA-compliant:**
-1. **Parent link exists**: Issue must have a parent issue linked (tracked-by or sub-issue relationship)
+1. **Parent link exists**: Issue must have a parent issue linked via the GitHub sub-issues API (see "Parent Link Detection" section below)
 2. **No "need attention" label**: Issue must NOT have the "need attention" label
 
 **Tolerance Period:**
@@ -58,14 +58,18 @@ For detailed criteria documentation, see [references/default-sla.md](references/
 
 ## Parent Link Detection
 
-To check if an issue has a parent, use the GitHub sub-issues API or the reference script:
+**IMPORTANT:** Parent links are managed through GitHub's sub-issues API. Do NOT attempt to detect parent links by parsing issue body text, checking for "tracked-by" keywords, or using GraphQL. These methods are unreliable and will produce false negatives.
 
-**API Endpoint:**
+**Primary method — `gh api` (recommended in CI/workflows):**
+```bash
+# Returns JSON if parent exists, exits with non-zero if no parent (404)
+gh api "repos/{owner}/{repo}/issues/{issue_number}/parent" \
+  --header "X-GitHub-Api-Version: 2022-11-28"
 ```
-GET /repos/{owner}/{repo}/issues/{issue_number}/parent
-```
+- HTTP 200 → parent exists (response contains parent issue JSON)
+- HTTP 404 → no parent link
 
-**Using the reference script:**
+**Alternative — Python reference script:**
 ```bash
 python .github/skills/check-sla/scripts/get_parent_issue.py <owner> <repo> <issue_number>
 ```
@@ -75,7 +79,14 @@ The script requires `GITHUB_TOKEN` or `GH_TOKEN` environment variable. Exit code
 - `2` — No parent issue found
 - `1` — Error
 
-**Fallback detection:** If the API returns 404 (no parent set via sub-issues), also check the issue body for links to the parent repository (e.g., `https://github.com/{owner}/{parent-repo}/issues/{number}`). If such a link exists, consider the issue as having a parent.
+**Alternative — Direct REST API (e.g., from Python `requests` or `curl`):**
+```
+GET https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent
+Headers:
+  Authorization: Bearer {token}
+  Accept: application/vnd.github+json
+  X-GitHub-Api-Version: 2022-11-28   # Required — omitting this may cause detection to fail
+```
 
 See [scripts/get_parent_issue.py](scripts/get_parent_issue.py) for implementation details.
 

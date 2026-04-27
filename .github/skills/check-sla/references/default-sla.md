@@ -65,14 +65,27 @@ When the SLA logic references a label (e.g., "has 'need more info' label"), matc
 
 ## Parent Link Detection
 
-Check for parent links using:
+**Use the GitHub sub-issues REST API only.** Do NOT parse the issue body or use GraphQL — these methods miss sub-issue relationships and produce false "no parent" results.
 
-1. **GitHub sub-issues API** (preferred): `GET /repos/{owner}/{repo}/issues/{issue_number}/parent`
-   - Returns the parent issue if one exists, or 404 if none
-   - Requires `GITHUB_TOKEN` or `GH_TOKEN` with `X-GitHub-Api-Version: 2022-11-28`
-   - Reference script: [`scripts/get_parent_issue.py`](../scripts/get_parent_issue.py)
-2. **Issue body fallback**: Check if the issue body contains a link to the parent repository (e.g., `https://github.com/{owner}/{parent-repo}/issues/{number}`)
-3. **Linked issues**: Check for tracking relationships
+**Preferred — `gh api`:**
+```bash
+gh api "repos/{owner}/{repo}/issues/{issue_number}/parent" --header "X-GitHub-Api-Version: 2022-11-28"
+```
+- HTTP 200 → parent exists
+- HTTP 404 → no parent link
+
+**Alternative — Direct REST API:**
+```
+GET https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent
+Headers:
+  Authorization: Bearer {token}
+  Accept: application/vnd.github+json
+  X-GitHub-Api-Version: 2022-11-28
+```
+
+**Alternative — Reference script:** [`scripts/get_parent_issue.py`](../scripts/get_parent_issue.py)
+- Requires `GITHUB_TOKEN` or `GH_TOKEN`
+- Exit code `0` = parent found, `2` = no parent, `1` = error
 
 ## Notification Requirements
 

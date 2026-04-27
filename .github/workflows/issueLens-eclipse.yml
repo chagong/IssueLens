@@ -38,10 +38,7 @@ jobs:
 
           # Run copilot CLI with issuelens custom agent
           prompt="Triage the opening issues updated since $since_date for the following repositories:
-          - microsoft/copilot-eclipse-feedback
-          - eclipse-copilot/eclipse-copilot
-          - microsoft/GitHub-Copilot-for-Eclipse
-          - microsoft/copilot-eclipse
+          - microsoft/copilot-for-eclipse
           
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Running IssueLens with prompt: $prompt"

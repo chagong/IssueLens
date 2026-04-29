@@ -42,7 +42,7 @@ jobs:
           
           Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "Running IssueLens with prompt: $prompt"
-          output=$(copilot --agent=issuelens --log-level debug --log-dir ./copilot-logs --prompt "$prompt" 2>&1 || true)
+          output=$(copilot --agent=issuelens --log-level debug --log-dir ./copilot-logs --share=./copilot-session.md --prompt "$prompt" 2>&1 || true)
           
           # Extract JSON from output (looking for lines between curly braces)
           json_output=$(echo "$output" | sed -n '/^{/,/^}/p' | jq -c '.')
@@ -77,5 +77,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: copilot-logs
-          path: copilot-logs/
+          path: |
+            copilot-logs/
+            copilot-session.md
           retention-days: 30

@@ -166,7 +166,7 @@ jobs:
           $workflow_url"
 
           echo "Triage with prompt: $prompt"
-          copilot --allow-all --enable-all-github-mcp-tools --no-custom-instructions --no-ask-user --log-level debug --log-dir ./copilot-logs --prompt "$prompt" || true
+          copilot --allow-all --enable-all-github-mcp-tools --no-custom-instructions --no-ask-user --log-level debug --log-dir ./copilot-logs --share=./copilot-session.md --prompt "$prompt" || true
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
@@ -183,4 +183,5 @@ jobs:
           path: |
             triage-results.json
             copilot-logs/
+            copilot-session.md
           retention-days: 30

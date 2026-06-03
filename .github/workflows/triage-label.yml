@@ -49,8 +49,9 @@ jobs:
         run: |
           lookback="${{ inputs.lookback_days || '1' }}"
           # Anchor to 00:00 UTC of the lookback day (not "now - N hours") so a
-          # delayed workflow queue can never cause us to miss issues.
-          since=$(date -u -d "$lookback days ago 00:00:00" +%Y-%m-%dT%H:%M:%SZ)
+          # delayed workflow queue can never cause us to miss issues. The
+          # relative shift goes in -d; midnight is hardcoded in the format.
+          since=$(date -u -d "$lookback days ago" +%Y-%m-%dT00:00:00Z)
           echo "Fetching issues updated since $since"
           python "$SCRIPTS_DIR/fetch_issues.py" \
             --repo "$TARGET_REPO" \

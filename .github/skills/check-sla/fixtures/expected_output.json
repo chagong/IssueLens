@@ -1,0 +1,9 @@
+{
+  "_comment": "Expected sla_status per issue_number for the fixture. These encode policy-independent SLA invariants that hold for any reasonable SLA policy (and specifically for the target repo's policy): exempt -> GOOD; brand-new within grace -> GOOD; old + parent + no attention -> GOOD; old + (no parent OR attention label) -> VIOLATION. Label-variation matching is checked by #1006 (NEEDS-ATTENTION must match the 'need attention' group).",
+  "1001": "GOOD",
+  "1002": "GOOD",
+  "1003": "GOOD",
+  "1004": "VIOLATION",
+  "1005": "VIOLATION",
+  "1006": "VIOLATION"
+}

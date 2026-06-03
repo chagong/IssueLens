@@ -3,19 +3,27 @@ name: Triage - Personal SLA Notifications (Working Days)
 # ---------------------------------------------------------------------------
 # Standalone per-assignee SLA notification workflow.
 #
-#   prepare (no AI) ── sla (AI, one job + one Copilot run per issue) ── notify
+# A single job so every step shares the same workspace and `triage-results.json`
+# is passed from step to step without any artifact upload/download.
 #
 # SLA rules live in the TARGET repo's `.github/sla.md` (markdown), so they can
-# diverge from any hard-coded default. We therefore evaluate SLA with the
-# Copilot CLI + `check-sla` skill rather than a fixed Python rule.
+# diverge from any hard-coded default. Rather than asking the AI to judge every
+# issue (which does not scale past the matrix cap and costs one Copilot run per
+# issue), we use the `check-sla` skill's generate → verify → run flow:
 #
 #   1. prepare — read the assignee roster from the IDS secret, query each
-#      assignee's OPEN issues, and emit the list of issue numbers as a matrix.
-#   2. sla     — fan out ONE job per issue; each job makes a single Copilot run
-#      that evaluates SLA for that one issue and writes a small JSON verdict.
-#      Every AI invocation therefore sees exactly one issue (minimal tokens).
-#   3. notify  — merge the per-issue verdicts back onto the roster data and send
-#      each assignee a personal Teams notification listing their VIOLATIONS.
+#      assignee's OPEN issues, and write them to `triage-results.json`.
+#   2. sla     — ONE Copilot run uses the check-sla skill to generate a
+#      deterministic `sla_check.py` AND verify it itself against the skill's
+#      fixture, iterating until it passes. CI then RE-RUNS the same verifier as
+#      an independent gate (so we never trust an unverified script), and finally
+#      runs the verified script over every issue in one pass, writing SLA
+#      verdicts back into the JSON.
+#   3. notify  — send each assignee a personal Teams notification listing their
+#      VIOLATIONS. No merge step is needed: the script scores the roster in place.
+#
+# A failing step stops the run, so notifications never fire on an un-evaluated
+# roster. Only the Copilot logs/session are uploaded, for debugging.
 # ---------------------------------------------------------------------------
 
 on:
@@ -28,14 +36,8 @@ env:
   SCRIPTS_DIR: .github/scripts/triage
 
 jobs:
-  # -------------------------------------------------------------------------
-  # Stage 1 — Fetch each assignee's open issues (deterministic, no AI).
-  # -------------------------------------------------------------------------
-  prepare:
+  sla-notify:
     runs-on: ubuntu-latest
-    outputs:
-      issues: ${{ steps.list.outputs.issues }}
-      count: ${{ steps.list.outputs.count }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,6 +47,15 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      # --- Stage 1: fetch each assignee's open issues (deterministic, no AI) ---
       - name: Fetch issues assigned to IDS members
         run: |
           python "$SCRIPTS_DIR/fetch_issues.py" \
@@ -55,119 +66,46 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           IDS: ${{ secrets.IDS }}
 
-      - name: Build issue-number matrix
+      - name: Count issues
         id: list
         run: |
-          issues=$(python -c "import json;print(json.dumps([i['issue_number'] for i in json.load(open('triage-results.json'))]))")
           count=$(python -c "import json;print(len(json.load(open('triage-results.json'))))")
-          echo "issues=$issues" >> "$GITHUB_OUTPUT"
           echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "Found $count issue(s) to evaluate: $issues"
+          echo "Found $count issue(s) to evaluate."
 
-      - name: Upload roster data
-        uses: actions/upload-artifact@v4
-        with:
-          name: sla-roster
-          path: triage-results.json
-          retention-days: 7
-
-  # -------------------------------------------------------------------------
-  # Stage 2 — Evaluate SLA (AI). One job per issue; one Copilot run per job.
-  # -------------------------------------------------------------------------
-  sla:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.count > 0 }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      max-parallel: 5
-      matrix:
-        issue: ${{ fromJson(needs.prepare.outputs.issues) }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install GitHub Copilot CLI
-        run: npm install -g @github/copilot
-
-      - name: Evaluate SLA for issue #${{ matrix.issue }}
+      # --- Stage 2: generate -> verify -> run the SLA script (check-sla skill) ---
+      # The skill makes Copilot generate the script AND run the deterministic
+      # verifier itself, iterating until it passes. All the detail lives in the
+      # skill, so this prompt is a single sentence.
+      - name: Generate and self-verify the SLA script (check-sla skill)
+        if: ${{ steps.list.outputs.count > 0 }}
         run: |
-          prompt="Use the 'check-sla' skill to evaluate the SLA status of GitHub issue #${{ matrix.issue }} in the repository $TARGET_REPO.
-
-          Read the SLA rules from the target repository's .github/sla.md (fall back to the skill's default strategy if it is missing), fetch the issue, and determine its SLA status.
-
-          Then write the verdict to a file named sla-${{ matrix.issue }}.json in the current working directory. The file MUST be valid JSON with exactly these keys:
-          {
-            \"issue_number\": ${{ matrix.issue }},
-            \"sla_status\": \"GOOD\" | \"WARNING\" | \"VIOLATION\",
-            \"days_open\": <integer number of days the issue has been open>,
-            \"sla_details\": \"<one short sentence explaining the verdict>\"
-          }
-
-          Use the exact uppercase status values GOOD, WARNING, or VIOLATION. Keep shell commands simple and avoid command substitution, jq string interpolation, and heredocs."
+          mkdir -p sla-gen
+          prompt="Use the 'check-sla' skill to produce a verified SLA evaluation script for the repository $TARGET_REPO, written to ./sla-gen/sla_check.py. Follow the skill's steps exactly, including running its verifier yourself and iterating until it exits 0. Do not evaluate the real issues and do not modify any other file."
 
           copilot --allow-all --enable-all-github-mcp-tools --no-custom-instructions --no-ask-user \
             --log-level debug --log-dir ./copilot-logs \
-            --share=./copilot-session-${{ matrix.issue }}.md \
+            --share=./copilot-session.md \
             --prompt "$prompt"
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
-      - name: Upload SLA verdict
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sla-verdict-issue-${{ matrix.issue }}
-          path: |
-            sla-${{ matrix.issue }}.json
-            copilot-logs/
-            copilot-session-${{ matrix.issue }}.md
-          retention-days: 7
-          if-no-files-found: warn
-
-  # -------------------------------------------------------------------------
-  # Stage 3 — Merge verdicts and send personal notifications (no AI).
-  # -------------------------------------------------------------------------
-  notify:
-    needs: [prepare, sla]
-    if: ${{ always() && needs.prepare.outputs.count > 0 }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Download roster data
-        uses: actions/download-artifact@v4
-        with:
-          name: sla-roster
-
-      - name: Download SLA verdicts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: sla-verdict-issue-*
-          path: sla-verdicts
-          merge-multiple: true
-
-      - name: Merge SLA verdicts onto roster
+      - name: Run SLA evaluation over all issues
+        if: ${{ steps.list.outputs.count > 0 }}
         run: |
-          python "$SCRIPTS_DIR/merge_sla.py" \
-            --roster triage-results.json \
-            --verdicts-dir sla-verdicts \
+          python sla-gen/sla_check.py \
+            --input triage-results.json \
             --output triage-results.json
+          python -c "import json;d=json.load(open('triage-results.json'));print('Evaluated',len(d),'issue(s)')"
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
+      # --- Stage 3: send personal notifications (no AI) ---
       - name: Send personal SLA notifications
+        if: ${{ steps.list.outputs.count > 0 }}
         run: |
           workflow_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           python "$SCRIPTS_DIR/notify.py" \
@@ -178,3 +116,16 @@ jobs:
         env:
           IDS: ${{ secrets.IDS }}
           PERSONAL_NOTIFICATION_URL: ${{ secrets.PERSONAL_NOTIFICATION_URL }}
+
+      # Upload only the Copilot logs/session for debugging — not the roster JSON.
+      - name: Upload Copilot logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sla-copilot-logs
+          path: |
+            copilot-logs/
+            copilot-session.md
+            triage-results.json
+          retention-days: 7
+          if-no-files-found: ignore

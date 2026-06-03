@@ -1,0 +1,68 @@
+[
+  {
+    "repo": "octo/example",
+    "issue_number": 1001,
+    "title": "Exempt: waiting on reporter for more info",
+    "url": "https://github.com/octo/example/issues/1001",
+    "assignees": ["alice"],
+    "labels": ["needs more info"],
+    "createdAt": "{{NOW-60d}}",
+    "updatedAt": "{{NOW-60d}}",
+    "has_parent": false
+  },
+  {
+    "repo": "octo/example",
+    "issue_number": 1002,
+    "title": "Brand new issue still inside the grace window",
+    "url": "https://github.com/octo/example/issues/1002",
+    "assignees": ["bob"],
+    "labels": ["bug"],
+    "createdAt": "{{NOW}}",
+    "updatedAt": "{{NOW}}",
+    "has_parent": false
+  },
+  {
+    "repo": "octo/example",
+    "issue_number": 1003,
+    "title": "Old issue but properly tracked with a parent",
+    "url": "https://github.com/octo/example/issues/1003",
+    "assignees": ["carol"],
+    "labels": ["bug"],
+    "createdAt": "{{NOW-60d}}",
+    "updatedAt": "{{NOW-60d}}",
+    "has_parent": true
+  },
+  {
+    "repo": "octo/example",
+    "issue_number": 1004,
+    "title": "Old, tracked, but flagged needs attention",
+    "url": "https://github.com/octo/example/issues/1004",
+    "assignees": ["dave"],
+    "labels": ["needs attention"],
+    "createdAt": "{{NOW-60d}}",
+    "updatedAt": "{{NOW-60d}}",
+    "has_parent": true
+  },
+  {
+    "repo": "octo/example",
+    "issue_number": 1005,
+    "title": "Old, untracked, no parent link",
+    "url": "https://github.com/octo/example/issues/1005",
+    "assignees": ["erin"],
+    "labels": ["bug"],
+    "createdAt": "{{NOW-60d}}",
+    "updatedAt": "{{NOW-60d}}",
+    "has_parent": false
+  },
+  {
+    "repo": "octo/example",
+    "issue_number": 1006,
+    "title": "Old, tracked, attention label in a different spelling/case",
+    "url": "https://github.com/octo/example/issues/1006",
+    "assignees": ["frank"],
+    "labels": ["NEEDS-ATTENTION"],
+    "createdAt": "{{NOW-60d}}",
+    "updatedAt": "{{NOW-60d}}",
+    "has_parent": true
+  }
+]

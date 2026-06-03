@@ -17,11 +17,11 @@ on:
     - cron: '0 0 * * *'  # Every day at 08:00 Shanghai Time (UTC+8)
   workflow_dispatch:
     inputs:
-      lookback_hours:
-        description: 'Label issues updated within this many hours'
+      lookback_days:
+        description: 'Label issues updated since 00:00 UTC this many days ago'
         type: string
         required: false
-        default: '24'
+        default: '1'
 
 env:
   TARGET_REPO: microsoft/copilot-intellij-feedback
@@ -47,8 +47,10 @@ jobs:
 
       - name: Fetch issues updated in the lookback window
         run: |
-          lookback="${{ inputs.lookback_hours || '24' }}"
-          since=$(date -u -d "$lookback hours ago" +%Y-%m-%dT%H:%M:%SZ)
+          lookback="${{ inputs.lookback_days || '1' }}"
+          # Anchor to 00:00 UTC of the lookback day (not "now - N hours") so a
+          # delayed workflow queue can never cause us to miss issues.
+          since=$(date -u -d "$lookback days ago 00:00:00" +%Y-%m-%dT%H:%M:%SZ)
           echo "Fetching issues updated since $since"
           python "$SCRIPTS_DIR/fetch_issues.py" \
             --repo "$TARGET_REPO" \

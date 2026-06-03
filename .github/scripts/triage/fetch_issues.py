@@ -44,6 +44,14 @@ def _request(url: str, token: str | None) -> dict:
             if exc.code in (403, 429) and attempt < 4:
                 time.sleep(2 ** attempt * 5)
                 continue
+            # Attach the response body so callers can see *why* (e.g. a 422
+            # "users cannot be searched" for a non-existent assignee login).
+            try:
+                body = exc.read().decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001
+                body = ""
+            if body:
+                exc.msg = f"{exc.msg}: {body}"
             raise
     raise RuntimeError("exceeded retry attempts")
 
@@ -107,7 +115,16 @@ def fetch_assignees(repo: str, token: str | None) -> list[dict]:
     logins = [e["github-id"] for e in entries if e.get("github-id")]
     seen: dict[int, dict] = {}
     for login in logins:
-        issues = search_issues(repo, f"repo:{repo} is:issue is:open assignee:{login}", token)
+        try:
+            issues = search_issues(repo, f"repo:{repo} is:issue is:open assignee:{login}", token)
+        except urllib.error.HTTPError as exc:
+            # GitHub returns 422 when a login can't be searched (e.g. the user
+            # no longer exists). That's a per-entry data problem, so skip it and
+            # keep going. Auth/rate/other errors are systemic — let them abort.
+            if exc.code != 422:
+                raise
+            print(f"  @{login}: skipped (HTTP 422 — login not searchable)", file=sys.stderr)
+            continue
         for issue in issues:
             # Dedupe by issue number (an issue may have multiple assignees).
             seen[issue["issue_number"]] = issue

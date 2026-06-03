@@ -1,0 +1,117 @@
+name: Triage - Label Issues (Daily)
+
+# ---------------------------------------------------------------------------
+# Standalone daily labeling workflow.
+#
+#   prepare (no AI) ── label (AI, one job + one Copilot run per issue)
+#
+# Only issues UPDATED in the last 24h are fetched, so the input data is small.
+# `prepare` emits the list of issue numbers; the `label` job fans out over a
+# matrix with ONE job per issue, and each job makes a single Copilot run for
+# that one issue. Every AI invocation therefore sees exactly one issue, which
+# keeps the token cost per run minimal — no chunking required.
+# ---------------------------------------------------------------------------
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Every day at 08:00 Shanghai Time (UTC+8)
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: 'Label issues updated within this many hours'
+        type: string
+        required: false
+        default: '24'
+
+env:
+  TARGET_REPO: microsoft/copilot-intellij-feedback
+  SCRIPTS_DIR: .github/scripts/triage
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Stage 1 — Fetch recently-updated issues (deterministic, no AI).
+  # -------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      issues: ${{ steps.list.outputs.issues }}
+      count: ${{ steps.list.outputs.count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch issues updated in the lookback window
+        run: |
+          lookback="${{ inputs.lookback_hours || '24' }}"
+          since=$(date -u -d "$lookback hours ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Fetching issues updated since $since"
+          python "$SCRIPTS_DIR/fetch_issues.py" \
+            --repo "$TARGET_REPO" \
+            --mode updated \
+            --since "$since" \
+            --output triage-results.json
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Build issue-number matrix
+        id: list
+        run: |
+          issues=$(python -c "import json;print(json.dumps([i['issue_number'] for i in json.load(open('triage-results.json'))]))")
+          count=$(python -c "import json;print(len(json.load(open('triage-results.json'))))")
+          echo "issues=$issues" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Found $count issue(s) to label: $issues"
+
+  # -------------------------------------------------------------------------
+  # Stage 2 — Label (AI). One job per issue; one Copilot run per job.
+  # -------------------------------------------------------------------------
+  label:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.count > 0 }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        issue: ${{ fromJson(needs.prepare.outputs.issues) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Label issue #${{ matrix.issue }}
+        run: |
+          prompt="Use the 'label-issue' skill to label GitHub issue #${{ matrix.issue }} in the repository $TARGET_REPO.
+
+          Read the issue's content, determine the appropriate labels per the repository's label-instructions (or existing repo labels), and apply them using the 'label-issue' skill's script. Do not remove existing labels. Keep shell commands simple and avoid command substitution, jq string interpolation, and heredocs."
+
+          copilot --allow-all --enable-all-github-mcp-tools --no-custom-instructions --no-ask-user \
+            --log-level debug --log-dir ./copilot-logs \
+            --share=./copilot-session-${{ matrix.issue }}.md \
+            --prompt "$prompt"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: label-logs-issue-${{ matrix.issue }}
+          path: |
+            copilot-logs/
+            copilot-session-${{ matrix.issue }}.md
+          retention-days: 7

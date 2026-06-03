@@ -1,187 +1,129 @@
-name: Triage Issues For JetBrains Copilot
+name: Triage - Weekly Summary Report (Mondays)
+
+# ---------------------------------------------------------------------------
+# Standalone weekly summary report.
+#
+#   1. Fetch all OPEN issues created since --since.
+#   2. Evaluate the SLA for each issue using the `check-sla` skill: ONE Copilot
+#      run generates a deterministic `sla_check.py` from the target repo's SLA
+#      policy and self-verifies it; CI re-verifies it as an independent gate,
+#      then runs it over every issue in one pass (no hard-coded SLA rules).
+#   3. Render a data-facing HTML report with embedded matplotlib charts
+#      (SLA distribution, age histogram, issues + violations by assignee and
+#      label, status-by-assignee, etc.).
+#   4. Email the chart-rich report to REPORT_RECIPIENTS.
+#
+# Only the SLA evaluation uses AI (one Copilot run); fetch, charts and email are
+# pure Python.
+# ---------------------------------------------------------------------------
 
 on:
   schedule:
-    - cron: '0 0 * * 1-5'  # Runs every weekday at 08:00 Shanghai Time (UTC+8)
+    - cron: '0 0 * * 1'  # Every Monday at 08:00 Shanghai Time (UTC+8)
   workflow_dispatch:
     inputs:
-      user_query:
-        description: 'Custom user query (leave empty for default triage query)'
-        type: string
-        required: false
-        default: ''
       since_date:
-        description: 'Triage issues opened since this date (YYYY-MM-DD)'
+        description: 'Include open issues created since this date (YYYY-MM-DD)'
         type: string
         required: false
         default: '2026-01-01'
 
+env:
+  TARGET_REPO: microsoft/copilot-intellij-feedback
+  SCRIPTS_DIR: .github/scripts/triage
+  SKILL_DIR: .github/skills/check-sla
+
 jobs:
-  triage-jetbrains-copilot:
+  report:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      
+
       - name: Install GitHub Copilot CLI
         run: npm install -g @github/copilot
-      
-      - name: Triage with Copilot CLI
-        id: triage
+
+      - name: Install charting dependencies
+        run: pip install matplotlib
+
+      - name: Fetch open issues
         run: |
-          # Define default user query
           since_date="${{ inputs.since_date || '2026-01-01' }}"
-          default_query="Triage open issues that were opened since ${since_date}"
-          
-          # Use custom query if provided, otherwise use default
-          if [ -n "${{ inputs.user_query }}" ]; then
-            user_query="${{ inputs.user_query }}"
-          else
-            user_query="$default_query"
-          fi
+          python "$SCRIPTS_DIR/fetch_issues.py" \
+            --repo "$TARGET_REPO" \
+            --mode created \
+            --since "$since_date" \
+            --output triage-results.json
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
 
-          # Define target repositories
-          repos="- microsoft/copilot-intellij-feedback"
+      # --- Evaluate SLA via the check-sla skill (generate -> verify -> run) ---
+      # The skill makes Copilot generate the SLA script AND run the deterministic
+      # verifier itself, iterating until it passes. The detail lives in the
+      # skill, so this prompt is a single sentence.
+      - name: Generate and self-verify the SLA script (check-sla skill)
+        run: |
+          mkdir -p sla-gen
+          prompt="Use the 'check-sla' skill to produce a verified SLA evaluation script for the repository $TARGET_REPO, written to ./sla-gen/sla_check.py. Follow the skill's steps exactly, including running its verifier yourself and iterating until it exits 0. Do not evaluate the real issues and do not modify any other file."
 
-          # Define instructions and notes
-          read -r -d '' instructions << 'INSTRUCTIONS' || true
-          ## Important: Context Management Strategy
-          There may be a large number of issues to triage. To avoid losing context:
-
-          ### Phase 1: Fetch and Triage Issues
-          #### Step 1 — List issues
-          Fetch all matching open issues and save them to `triage-results.json`:
-          ```bash
-          gh issue list --repo <owner>/<repo> --state open --limit 500 \
-            --json number,title,url,assignees,labels,createdAt \
-            --search "created:>=${since_date}" > /tmp/raw_issues.json
-          ```
-          Then normalize into `triage-results.json` using Python (extract assignee logins, label names):
-          ```python
-          python3 -c "
-          import json, pathlib
-          raw = json.loads(pathlib.Path('/tmp/raw_issues.json').read_text())
-          out = [{
-              'repo': '<owner>/<repo>',
-              'issue_number': i['number'],
-              'title': i['title'],
-              'url': i['url'],
-              'assignees': [a['login'] for a in i.get('assignees', [])],
-              'labels': [l['name'] for l in i.get('labels', [])],
-              'createdAt': i['createdAt']
-          } for i in raw]
-          pathlib.Path('triage-results.json').write_text(json.dumps(out, indent=2))
-          print(f'Saved {len(out)} issues to triage-results.json')
-          "
-          ```
-
-          #### Step 2 — Label and check SLA for each issue
-          For each issue in `triage-results.json`:
-          1. **Label**: Apply the 'label-issue' skill to determine and add labels.
-          2. **Check SLA**: Apply the 'check-sla' skill to evaluate SLA compliance.
-          3. **Update `triage-results.json`**: Add these properties to each issue entry:
-             - `labels_added` — array of new labels applied by the label-issue skill
-             - `sla_status` — one of `"GOOD"`, `"WARNING"`, `"VIOLATION"`
-             - `sla_details` — brief reason for the SLA status
-             - `days_open` — number of days since issue was created
-
-          The final `triage-results.json` should contain entries matching this schema:
-          ```json
-          [
-            {
-              "repo": "owner/repo",
-              "issue_number": 123,
-              "title": "Issue title",
-              "url": "https://github.com/owner/repo/issues/123",
-              "assignees": ["user1", "user2"],
-              "labels": ["bug", "area:chat"],
-              "createdAt": "2026-01-15T10:00:00Z",
-              "labels_added": ["bug"],
-              "sla_status": "GOOD | WARNING | VIOLATION",
-              "sla_details": "Brief reason",
-              "days_open": 5
-            }
-          ]
-          ```
-
-          ### Phase 2: Group and Summarize (read from file)
-          After ALL issues are processed:
-          1. Read `triage-results.json` to get the full picture.
-          2. Group SLA violations by assignee.
-          3. Send personal notifications to assignees for SLA violations using the 'send-personal-notification' skill.
-             - Retrieve assignee email addresses from the 'IDS' environment variable.
-             - Group issues by assignee and send one notification per assignee.
-             - If an issue has multiple assignees, notify each of them.
-             - Skip notification if the assignee's email is not found.
-          4. Send a summary email of the triage operation using the 'send-email' skill.
-             - Send to email addresses specified in the 'REPORT_RECIPIENTS' environment variable.
-             - Include counts: total issues triaged, SLA good, SLA warning, SLA violation.
-             - Include views: counts summary, top assigness with SLA violations, and top 20 oldest issues with SLA violations.
-             - Include a link to the workflow run for details.
-
-          ### Skill Usage
-          - Label issues using the 'label-issue' skill.
-          - Check SLA compliance using the 'check-sla' skill.
-
-          ## CRITICAL: Shell Command Safety Rules
-          The Copilot CLI shell tool WILL BLOCK commands that look like dangerous shell expansion.
-          Blocked commands cause the entire operation to fail. You MUST follow these rules for ALL shell commands:
-
-          1. **NEVER use `$(...)` command substitution** inside echo or other commands.
-             - BAD:  `echo "Total: $(jq length file.json)"`
-             - GOOD: `jq length file.json`
-          2. **NEVER use jq string interpolation `\(...)` inside shell strings**.
-             - BAD:  `jq '.[] | .url = "https://example.com/\(.number)"'`
-             - GOOD: `jq '.[] | .url = ("https://example.com/" + (.number | tostring))'`
-          3. **NEVER use heredocs (`<< EOF`, `<< 'EOF'`, `<< JSONEOF`, etc.) to write ANY data**.
-             - BAD:  `cat > file.json << 'EOF' ... EOF`
-             - GOOD: Use Python to write files: `python3 -c "import json; json.dump(data, open('file.json','w'))"`
-             - GOOD: Use the file creation tool if available.
-          4. **Prefer Python scripts over complex jq pipelines** for data transformation.
-             Write a short inline Python script and execute it with `python3 script.py` instead of chaining jq commands.
-          5. **Keep shell commands simple** — one operation per command when possible.
-
-          ## Notes
-          - Use 'gh' CLI if you encounter issues with MCP tools.
-          - Minimize exploratory commands. Do not inspect JSON structure repeatedly — assume standard GitHub API shapes.
-          - Avoid fetching more data than needed. Use date filters in queries to reduce issue count.
-          INSTRUCTIONS
-
-          # Define workflow URL
-          workflow_url="Workflow Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          # Compose the full prompt
-          prompt="$user_query
-
-          ## Target Repositories
-          $repos
-
-          $instructions
-
-          $workflow_url"
-
-          echo "Triage with prompt: $prompt"
-          copilot --allow-all --enable-all-github-mcp-tools --no-custom-instructions --no-ask-user --log-level debug --log-dir ./copilot-logs --share=./copilot-session.md --prompt "$prompt" || true
+          copilot --allow-all --enable-all-github-mcp-tools --no-custom-instructions --no-ask-user \
+            --log-level debug --log-dir ./copilot-logs \
+            --share=./copilot-session.md \
+            --prompt "$prompt"
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
-          IDS: ${{ secrets.IDS }}
+
+      - name: Run SLA evaluation over all issues
+        run: |
+          python sla-gen/sla_check.py \
+            --input triage-results.json \
+            --output triage-results.json
+          python -c "import json;d=json.load(open('triage-results.json'));print('Evaluated',len(d),'issue(s)')"
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Render chart report
+        run: |
+          python "$SCRIPTS_DIR/render_issue_charts.py" \
+            --input triage-results.json \
+            --output report-content.html \
+            --title "Weekly Issue Triage Report - JetBrains Copilot"
+
+      - name: Send summary email with charts
+        run: |
+          workflow_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python "$SCRIPTS_DIR/notify.py" \
+            --input triage-results.json \
+            --mode email \
+            --content-file report-content.html \
+            --workflow-url "$workflow_url" \
+            --title "Weekly Issue Triage Report - JetBrains Copilot"
+        env:
           REPORT_RECIPIENTS: ${{ secrets.REPORT_RECIPIENTS }}
           MAILING_URL: ${{ secrets.MAILING_URL }}
-          PERSONAL_NOTIFICATION_URL: ${{ secrets.PERSONAL_NOTIFICATION_URL }}
 
-      - name: Upload triage output
+      - name: Upload report artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: triage-output
+          name: weekly-report
           path: |
+            report-content.html
             triage-results.json
+            sla-gen/sla_check.py
             copilot-logs/
             copilot-session.md
           retention-days: 30

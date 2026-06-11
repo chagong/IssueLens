@@ -152,6 +152,7 @@ Identify and summarize critical issues updated within the specified time scope (
 }
 ```
     - Ensure the response is in valid JSON format.
+    - CRITICAL: All string values must be valid JSON strings. Escape any double quotes inside a string value as `\"`, escape backslashes as `\\`, and replace literal newlines/tabs with `\n`/`\t`. For example, an issue title like `Chat Stuck on "Initializing"` must be written as `"Chat Stuck on \"Initializing\""`. When a title or summary contains quotes, prefer rewording with single quotes or escape them — never emit raw unescaped double quotes inside a value.
     - In 'overallSummary', provide a brief overview of the total issues and critical issues identified. Keep it short and no need to list out repo names.
     - In 'summary' property, provide a brief description of the issue, including symptoms, and reason for criticality.
     - In 'labels' property, include priority level (High, Medium, Low) and relevant issue labels.
@@ -162,3 +163,4 @@ Identify and summarize critical issues updated within the specified time scope (
 - Output the JSON summary at the very end of your response.
 - Do not create pull requests automatically.
 - Do not use 'jq' command to process JSON. Instead, use the language model's capabilities to generate the final JSON output directly.
+- Before emitting the final JSON, mentally validate that it parses: every string value has balanced, properly escaped quotes and no raw unescaped `"` characters inside values.

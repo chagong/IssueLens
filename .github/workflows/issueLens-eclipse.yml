@@ -45,11 +45,11 @@ jobs:
           output=$(copilot --agent=issuelens --allow-all --enable-all-github-mcp-tools --no-ask-user --log-level debug --log-dir ./copilot-logs --share=./copilot-session.md --prompt "$prompt" 2>&1 || true)
           
           # Extract JSON from output (looking for lines between curly braces)
-          json_output=$(echo "$output" | sed -n '/^{/,/^}/p' | jq -c '.')
+          json_output=$(echo "$output" | sed -n '/^{/,/^}/p' | jq -c '.' 2>/dev/null || true)
           
           # If no JSON found with that pattern, try to extract any JSON
           if [ -z "$json_output" ]; then
-            json_output=$(echo "$output" | grep -o '{[^}]*}' | jq -c '.' | head -1)
+            json_output=$(echo "$output" | grep -o '{[^}]*}' | jq -c '.' 2>/dev/null | head -1 || true)
           fi
           
           # If still no JSON, create a default payload with the raw output

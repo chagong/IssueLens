@@ -64,11 +64,15 @@ jobs:
           
           # If still no JSON, create a default payload with the raw output
           if [ -z "$json_output" ]; then
-            json_output=$(jq -n --arg output "$output" '{"message": "IssueLens analysis complete", "output": $output}')
+            json_output=$(jq -cn --arg output "$output" '{"message": "IssueLens analysis complete", "output": $output}')
           fi
           
           # Save to output
-          echo "payload=$json_output" >> $GITHUB_OUTPUT
+          {
+            echo "payload<<ISSUELENS_PAYLOAD"
+            echo "$json_output"
+            echo "ISSUELENS_PAYLOAD"
+          } >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}

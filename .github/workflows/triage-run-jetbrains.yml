@@ -65,7 +65,7 @@ jobs:
             --since "$since_date" \
             --output triage-results.json
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # --- Evaluate SLA via the check-sla skill (generate -> verify -> run) ---
       # The skill makes Copilot generate the SLA script AND run the deterministic
@@ -81,9 +81,9 @@ jobs:
             --share=./copilot-session.md \
             --prompt "$prompt"
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run SLA evaluation over all issues
         run: |

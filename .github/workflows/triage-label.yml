@@ -60,7 +60,7 @@ jobs:
             --since "$since" \
             --output triage-results.json
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build issue-number matrix
         id: list

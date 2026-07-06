@@ -62,9 +62,9 @@ jobs:
           echo "Running with prompt for PRs closed between ${since_date} and ${until_date}"
           copilot --allow-all --no-custom-instructions --no-ask-user --log-level debug --log-dir ./copilot-logs --share=./copilot-session.md --prompt "$prompt" || true
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RECIPIENT_PM: ${{ secrets.RECIPIENT_PM }}
           MAILING_URL: ${{ secrets.MAILING_URL }}
 

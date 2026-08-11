@@ -7,6 +7,10 @@ description: Assign GitHub issues to the right person based on technical area ow
 
 Automatically assign GitHub issues to the appropriate owner based on technical area mapping and historical assignment patterns.
 
+## Repository Assignment Instructions
+
+Before applying the generic strategies below, read `.github/issuelens/assignment.md` from the target repository. If the file exists, treat it as authoritative and follow its eligibility, lookup, assignment, and fallback rules. Use the generic strategies only when the repository instructions explicitly request them or when the file does not exist.
+
 ## Overview
 
 This skill determines the best assignee for a GitHub issue using two complementary strategies:
@@ -61,22 +65,23 @@ Query the repository for similar closed/resolved issues and analyze assignment p
 ## Workflow
 
 1. **Input**: Receive issue number and repository (owner/repo)
-2. **Fetch issue**: Get issue details (title, body, labels)
-3. **Strategy 1 - Area Mapping**:
+2. **Read repository instructions**: Fetch `.github/issuelens/assignment.md` and follow it when present
+3. **Fetch issue**: Get issue details (title, body, labels, assignees)
+4. **Strategy 1 - Area Mapping** (when allowed by repository instructions):
    - Read `area_owners.md` from the repository
    - Match issue content to technical areas
    - Get candidate owners from matching areas
-4. **Strategy 2 - Similar Issues**:
+5. **Strategy 2 - Similar Issues** (when allowed by repository instructions):
    - Search for similar closed issues
    - Analyze assignee patterns
    - Get candidate owners by frequency
-5. **Combine Results**:
+6. **Combine Results**:
    - If both strategies agree → high confidence assignment
    - If only area mapping matches → use area owner
    - If only similar issues match → use historical pattern
    - If neither matches → report no confident match
-6. **Assign Issue**: Use GitHub API to assign the selected owner
-7. **Report**: Confirm assignment with reasoning
+7. **Assign Issue**: Use GitHub API to assign the selected owner
+8. **Report**: Confirm assignment with reasoning
 
 ## Assigning Issues
 

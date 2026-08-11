@@ -1,0 +1,116 @@
+name: Triage - Assign Issues (Daily)
+
+# ---------------------------------------------------------------------------
+# Standalone daily assignment workflow.
+#
+#   prepare (no AI) ── assign (AI, one job + one Copilot run per issue)
+#
+# Only unassigned issues UPDATED in the lookback window are included. Each AI
+# invocation handles one issue and follows the assignment policy stored in the
+# target repository at .github/issuelens/assignment.md.
+# ---------------------------------------------------------------------------
+
+on:
+  schedule:
+    - cron: "0 1 * * *" # Every day at 09:00 Shanghai Time (UTC+8)
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Assign issues updated since 00:00 UTC this many days ago"
+        type: string
+        required: false
+        default: "1"
+
+env:
+  TARGET_REPO: microsoft/copilot-intellij-feedback
+  SCRIPTS_DIR: .github/scripts/triage
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Stage 1 - Fetch recently-updated issues and retain unassigned ones.
+  # -------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      issues: ${{ steps.list.outputs.issues }}
+      count: ${{ steps.list.outputs.count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch issues updated in the lookback window
+        run: |
+          lookback="${{ inputs.lookback_days || '1' }}"
+          day=$(date -u -d "$lookback days ago" +%Y-%m-%d)
+          since="${day}T00:00:00Z"
+          echo "Fetching issues updated since $since"
+          python "$SCRIPTS_DIR/fetch_issues.py" \
+            --repo "$TARGET_REPO" \
+            --mode updated \
+            --since "$since" \
+            --output triage-results.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build unassigned issue-number matrix
+        id: list
+        run: |
+          issues=$(python -c "import json;print(json.dumps([i['issue_number'] for i in json.load(open('triage-results.json')) if not i['assignees']]))")
+          count=$(python -c "import json;print(sum(not i['assignees'] for i in json.load(open('triage-results.json'))))")
+          echo "issues=$issues" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Found $count unassigned issue(s): $issues"
+
+  # -------------------------------------------------------------------------
+  # Stage 2 - Assign (AI). One job per issue; one Copilot run per job.
+  # -------------------------------------------------------------------------
+  assign:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.count > 0 }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        issue: ${{ fromJson(needs.prepare.outputs.issues) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Assign issue #${{ matrix.issue }}
+        run: |
+          prompt="Use the 'assign-issue' skill to process GitHub issue #${{ matrix.issue }} in the repository $TARGET_REPO.
+
+          Read and follow the assignment instructions from .github/issuelens/assignment.md in $TARGET_REPO. Re-check that the feedback issue has no assignees before taking action. If it is still unassigned and has a linked issue in microsoft/copilot-intellij, assign the feedback issue to the same assignees as that internal issue. If it already has an assignee, has no linked internal issue, or the internal issue has no assignees, leave it unchanged. Do not remove existing assignees. Keep shell commands simple and avoid command substitution, jq string interpolation, and heredocs."
+
+          copilot --allow-all --enable-all-github-mcp-tools --no-custom-instructions --no-ask-user \
+            --log-level debug --log-dir ./copilot-logs \
+            --share=./copilot-session-${{ matrix.issue }}.md \
+            --prompt "$prompt"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assign-logs-issue-${{ matrix.issue }}
+          path: |
+            copilot-logs/
+            copilot-session-${{ matrix.issue }}.md
+          retention-days: 7

@@ -64,9 +64,9 @@ jobs:
             echo "ISSUELENS_PAYLOAD"
           } >> "$GITHUB_OUTPUT"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
 
 
       - name: Trigger Notification

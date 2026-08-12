@@ -107,7 +107,6 @@ jobs:
             --prompt "$prompt"
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.PAT }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Upload logs

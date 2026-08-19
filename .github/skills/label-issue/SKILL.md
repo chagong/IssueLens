@@ -50,7 +50,7 @@ Analyze issue content to determine appropriate labels by:
 
 ## Applying Labels
 
-Run the bundled Python script to add labels:
+Run the bundled Python script to add labels. The script checks the issue's current labels first and skips the write when all requested labels already exist, so an unchanged issue's `updated_at` timestamp is not refreshed.
 
 ```bash
 # Install dependency

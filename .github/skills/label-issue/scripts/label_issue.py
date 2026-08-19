@@ -27,17 +27,26 @@ def get_github_token() -> str:
 
 def add_labels(
     owner: str, repo: str, issue_number: int, labels: list[str], token: str
-) -> dict:
-    """Add labels to a GitHub issue."""
+) -> tuple[list[dict], list[str]]:
+    """Add only labels that are not already on a GitHub issue."""
     url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/labels"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    response = requests.post(url, headers=headers, json={"labels": labels})
+    response = requests.get(url, headers=headers)
     response.raise_for_status()
-    return response.json()
+    current_labels = response.json()
+    current_names = {label["name"].casefold() for label in current_labels}
+    new_labels = [label for label in labels if label.casefold() not in current_names]
+
+    if not new_labels:
+        return current_labels, []
+
+    response = requests.post(url, headers=headers, json={"labels": new_labels})
+    response.raise_for_status()
+    return response.json(), new_labels
 
 
 def main():
@@ -60,9 +69,16 @@ def main():
 
     try:
         token = get_github_token()
-        result = add_labels(args.owner, args.repo, args.issue_number, labels, token)
-        applied_labels = [label["name"] for label in result]
-        print(f"✅ Labels added to issue #{args.issue_number}: {', '.join(applied_labels)}")
+        _, added_labels = add_labels(
+            args.owner, args.repo, args.issue_number, labels, token
+        )
+        if added_labels:
+            print(
+                f"✅ Labels added to issue #{args.issue_number}: "
+                f"{', '.join(added_labels)}"
+            )
+        else:
+            print(f"✅ Issue #{args.issue_number} already has all requested labels; no changes made.")
         sys.exit(0)
     except ValueError as e:
         print(f"❌ Configuration error: {e}", file=sys.stderr)
